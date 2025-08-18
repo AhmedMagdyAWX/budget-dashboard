@@ -128,8 +128,8 @@ with tab3:
         c3.metric("Variance %", f"{variance_pct:.2f}%")
         c4.metric("Items Count", f"{len(selected_items)}")
 
-    # --- REPLACED: Monthly breakdown per item (stacked rows) ---
-    st.markdown("#### Monthly Breakdown by Item (stacked rows)")
+    # --- REPLACED: Monthly breakdown by item (stacked rows with simulated merged item) ---
+    st.markdown("#### Monthly Breakdown by Item (stacked rows, merged item label)")
     if filtered.empty:
         st.info("No data for the selected filters.")
     else:
@@ -138,7 +138,7 @@ with tab3:
             "Show rows for:",
             metric_options,
             default=metric_options,
-            help="Uncheck to hide any of Planned / Actual / Variance"
+            help="Uncheck to hide any of Planned / Actual / Variance",
         )
 
         if not metrics_selected:
@@ -153,7 +153,7 @@ with tab3:
             )
             monthly["Variance"] = monthly["Actual"] - monthly["Planned"]
 
-            # Keep the row order as user selected (Planned/Actual/Variance)
+            # Keep user-selected order for the stacked metrics
             cat = pd.api.types.CategoricalDtype(categories=metrics_selected, ordered=True)
 
             long = monthly.melt(
@@ -164,7 +164,7 @@ with tab3:
             )
             long["Metric"] = long["Metric"].astype(cat)
 
-            # Wide table: rows = (Item, Metric), columns = months
+            # Wide for display: rows = (Item, Metric), columns = months
             table = (
                 long.pivot_table(
                     index=["Item", "Metric"],
@@ -175,28 +175,57 @@ with tab3:
                 .sort_index()
             )
 
-            # Nicely format month column labels
+            # Pretty month headers
             if table.shape[1] > 0:
                 table.columns = [c.strftime("%Y-%m") for c in table.columns]
 
-            # Style: color text by metric
+            # Reset index so we can "merge" the item label by blanking repeats
+            table_disp = table.reset_index()
+
+            # Show item only on the first metric row, blank on the following metric rows
+            table_disp["Item"] = table_disp["Item"].where(~table_disp["Item"].duplicated(), "")
+
+            # Styling
+            month_cols = [c for c in table_disp.columns if c not in ["Item", "Metric"]]
             color_map = {
                 "Planned": "#1f77b4",   # blue
                 "Actual": "#2ca02c",    # green
                 "Variance": "#d62728",  # red
             }
 
-            def color_by_metric(row):
-                # row.name is a tuple: (Item, Metric)
-                metric = row.name[1] if isinstance(row.name, tuple) else None
-                color = color_map.get(metric, None)
-                return [f"color: {color}; font-weight:600" if color else "" for _ in row]
+            ncols = table_disp.shape[1]
 
-            styled = table.style.format("{:,.0f}").apply(color_by_metric, axis=1)
+            def color_by_metric_row(row):
+                # Style only the month columns according to the metric color
+                metric = row["Metric"]
+                color = color_map.get(metric, None)
+                styles = []
+                for col in table_disp.columns:
+                    if col in month_cols and color:
+                        styles.append(f"color: {color}; font-weight:600")
+                    else:
+                        styles.append("")
+                return styles
+
+            def bold_first_item_row(row):
+                # Bold the first row of each item (where Item != "")
+                if row["Item"]:
+                    # bold the Item cell only
+                    styles = [""] * ncols
+                    styles[table_disp.columns.get_loc("Item")] = "font-weight:700"
+                    return styles
+                return [""] * ncols
+
+            styled = (
+                table_disp.style
+                .format({col: "{:,.0f}" for col in month_cols})
+                .apply(color_by_metric_row, axis=1)
+                .apply(bold_first_item_row, axis=1)
+            )
 
             st.dataframe(styled, use_container_width=True)
 
-            # Download (long format) for Excel analysis
+            # Download (long format) for Excel/Sheets
             csv = long.sort_values(["Item", "Metric", "Month"]).to_csv(index=False).encode("utf-8")
             st.download_button(
                 "⬇️ Download monthly stacked breakdown (CSV)",
@@ -205,11 +234,12 @@ with tab3:
                 mime="text/csv",
             )
 
-            st.caption("Legend: Planned = blue, Actual = green, Variance = red.")
+            st.caption("Note: Streamlit tables don’t support true row-spans; this view simulates merged item labels by hiding repeats. Colors — Planned: blue, Actual: green, Variance: red.")
 
 
 
 # ---------- Notes ----------
 st.caption("Tip: Use the Items filter to focus on specific categories. Switch the chart metric to compare Planned vs Actual per item.")
+
 
 
