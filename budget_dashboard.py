@@ -95,7 +95,7 @@ with tab2:
         st.line_chart(by_month)
 
 with tab3:
-    st.markdown("#### Breakdown by Item")
+    st.markdown("#### Breakdown by Item (Totals)")
     if filtered.empty:
         st.info("No data for the selected filters.")
     else:
@@ -106,7 +106,6 @@ with tab3:
         summary["Variance"] = summary["Actual"] - summary["Planned"]
         summary["Variance %"] = (summary["Variance"] / summary["Planned"]).replace([pd.NA, pd.NaT, float("inf")], 0) * 100
 
-        # show table
         st.dataframe(
             summary.style.format({
                 "Planned": "{:,.0f}",
@@ -129,5 +128,54 @@ with tab3:
         c3.metric("Variance %", f"{variance_pct:.2f}%")
         c4.metric("Items Count", f"{len(selected_items)}")
 
+    # --- NEW: Monthly breakdown per item ---
+    st.markdown("#### Monthly Breakdown by Item")
+    if filtered.empty:
+        st.info("No data for the selected filters.")
+    else:
+        view = st.radio("Monthly table metric", ["All metrics", "Planned", "Actual", "Variance"], horizontal=True)
+
+        monthly = (
+            filtered.groupby(["Item", "Month"])[["Planned", "Actual"]].sum()
+            .assign(Variance=lambda d: d["Actual"] - d["Planned"])
+            .reset_index()
+            .sort_values(["Item", "Month"])
+        )
+
+        if view == "All metrics":
+            # Multi-index columns: (Metric, Month)
+            wide = monthly.pivot_table(
+                index="Item",
+                columns="Month",
+                values=["Planned", "Actual", "Variance"],
+                aggfunc="sum"
+            ).sort_index(axis=1)
+            # Format month labels as YYYY-MM
+            wide.columns = pd.MultiIndex.from_tuples(
+                [(lvl0, col.strftime("%Y-%m")) for (lvl0, col) in wide.columns],
+                names=["Metric", "Month"]
+            )
+            st.dataframe(wide)
+        else:
+            wide = monthly.pivot_table(
+                index="Item",
+                columns="Month",
+                values=view,
+                aggfunc="sum"
+            ).sort_index(axis=1)
+            wide.columns = [c.strftime("%Y-%m") for c in wide.columns]
+            st.dataframe(wide.style.format("{:,.0f}"))
+
+        # Download CSV of the monthly detail (long format)
+        csv = monthly.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download monthly breakdown (CSV)",
+            csv,
+            file_name=f"monthly_breakdown_{selected_budget}_{selected_version}.csv",
+            mime="text/csv"
+        )
+
+
 # ---------- Notes ----------
 st.caption("Tip: Use the Items filter to focus on specific categories. Switch the chart metric to compare Planned vs Actual per item.")
+
