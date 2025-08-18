@@ -128,54 +128,88 @@ with tab3:
         c3.metric("Variance %", f"{variance_pct:.2f}%")
         c4.metric("Items Count", f"{len(selected_items)}")
 
-    # --- NEW: Monthly breakdown per item ---
-    st.markdown("#### Monthly Breakdown by Item")
+    # --- REPLACED: Monthly breakdown per item (stacked rows) ---
+    st.markdown("#### Monthly Breakdown by Item (stacked rows)")
     if filtered.empty:
         st.info("No data for the selected filters.")
     else:
-        view = st.radio("Monthly table metric", ["All metrics", "Planned", "Actual", "Variance"], horizontal=True)
-
-        monthly = (
-            filtered.groupby(["Item", "Month"])[["Planned", "Actual"]].sum()
-            .assign(Variance=lambda d: d["Actual"] - d["Planned"])
-            .reset_index()
-            .sort_values(["Item", "Month"])
+        metric_options = ["Planned", "Actual", "Variance"]
+        metrics_selected = st.multiselect(
+            "Show rows for:",
+            metric_options,
+            default=metric_options,
+            help="Uncheck to hide any of Planned / Actual / Variance"
         )
 
-        if view == "All metrics":
-            # Multi-index columns: (Metric, Month)
-            wide = monthly.pivot_table(
-                index="Item",
-                columns="Month",
-                values=["Planned", "Actual", "Variance"],
-                aggfunc="sum"
-            ).sort_index(axis=1)
-            # Format month labels as YYYY-MM
-            wide.columns = pd.MultiIndex.from_tuples(
-                [(lvl0, col.strftime("%Y-%m")) for (lvl0, col) in wide.columns],
-                names=["Metric", "Month"]
-            )
-            st.dataframe(wide)
+        if not metrics_selected:
+            st.warning("Select at least one metric to display.")
         else:
-            wide = monthly.pivot_table(
-                index="Item",
-                columns="Month",
-                values=view,
-                aggfunc="sum"
-            ).sort_index(axis=1)
-            wide.columns = [c.strftime("%Y-%m") for c in wide.columns]
-            st.dataframe(wide.style.format("{:,.0f}"))
+            # Build monthly sums and compute Variance
+            monthly = (
+                filtered.groupby(["Item", "Month"])[["Planned", "Actual"]]
+                .sum()
+                .reset_index()
+                .sort_values(["Item", "Month"])
+            )
+            monthly["Variance"] = monthly["Actual"] - monthly["Planned"]
 
-        # Download CSV of the monthly detail (long format)
-        csv = monthly.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download monthly breakdown (CSV)",
-            csv,
-            file_name=f"monthly_breakdown_{selected_budget}_{selected_version}.csv",
-            mime="text/csv"
-        )
+            # Keep the row order as user selected (Planned/Actual/Variance)
+            cat = pd.api.types.CategoricalDtype(categories=metrics_selected, ordered=True)
+
+            long = monthly.melt(
+                id_vars=["Item", "Month"],
+                value_vars=metrics_selected,
+                var_name="Metric",
+                value_name="Amount",
+            )
+            long["Metric"] = long["Metric"].astype(cat)
+
+            # Wide table: rows = (Item, Metric), columns = months
+            table = (
+                long.pivot_table(
+                    index=["Item", "Metric"],
+                    columns="Month",
+                    values="Amount",
+                    aggfunc="sum",
+                )
+                .sort_index()
+            )
+
+            # Nicely format month column labels
+            if table.shape[1] > 0:
+                table.columns = [c.strftime("%Y-%m") for c in table.columns]
+
+            # Style: color text by metric
+            color_map = {
+                "Planned": "#1f77b4",   # blue
+                "Actual": "#2ca02c",    # green
+                "Variance": "#d62728",  # red
+            }
+
+            def color_by_metric(row):
+                # row.name is a tuple: (Item, Metric)
+                metric = row.name[1] if isinstance(row.name, tuple) else None
+                color = color_map.get(metric, None)
+                return [f"color: {color}; font-weight:600" if color else "" for _ in row]
+
+            styled = table.style.format("{:,.0f}").apply(color_by_metric, axis=1)
+
+            st.dataframe(styled, use_container_width=True)
+
+            # Download (long format) for Excel analysis
+            csv = long.sort_values(["Item", "Metric", "Month"]).to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Download monthly stacked breakdown (CSV)",
+                csv,
+                file_name=f"monthly_stacked_{selected_budget}_{selected_version}.csv",
+                mime="text/csv",
+            )
+
+            st.caption("Legend: Planned = blue, Actual = green, Variance = red.")
+
 
 
 # ---------- Notes ----------
 st.caption("Tip: Use the Items filter to focus on specific categories. Switch the chart metric to compare Planned vs Actual per item.")
+
 
