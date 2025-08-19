@@ -1,4 +1,4 @@
-# pages/1_Create_Budget.py
+# pages/1_Create_Budget.py  (compat: no MultiSelectColumn required)
 
 import streamlit as st
 import pandas as pd
@@ -10,28 +10,11 @@ st.title("🧪 Create Budget")
 
 # ---------------- Helpers ----------------
 def month_range(start_dt: date, end_dt: date):
-    """Return a Month-Start date_range from start_dt..end_dt (inclusive)."""
     s = pd.Timestamp(start_dt).replace(day=1)
     e = pd.Timestamp(end_dt).replace(day=1)
     if e < s:
         s, e = e, s
     return pd.date_range(s, e, freq="MS")
-
-def make_empty_grid(items, months, extra_cols, multi_cols):
-    cols = ["Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
-    df = pd.DataFrame(columns=cols)
-    if items:
-        df["Item"] = items
-    # init month columns
-    for m in [m.strftime("%Y-%m") for m in months]:
-        df[m] = df.get(m, 0).fillna(0)
-    # init dims
-    for c in extra_cols:
-        if c in multi_cols:
-            df[c] = [ [] for _ in range(len(df)) ]  # independent lists per row
-        else:
-            df[c] = df.get(c, "")
-    return df
 
 def parse_multi(cell):
     """Turn cell (str/list/None) into list[str] using , or ; separators."""
@@ -42,12 +25,26 @@ def parse_multi(cell):
     s = str(cell).strip()
     if not s:
         return []
-    # split on comma or semicolon
     parts = [p.strip() for p in s.replace(";", ",").split(",")]
     return [p for p in parts if p]
 
+def make_empty_grid(items, months, extra_cols, multi_cols):
+    cols = ["Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
+    df = pd.DataFrame(columns=cols)
+    if items:
+        df["Item"] = items
+    # init months
+    for m in [m.strftime("%Y-%m") for m in months]:
+        df[m] = 0
+    # init dims
+    for c in extra_cols:
+        if c in multi_cols:
+            df[c] = [[] for _ in range(len(df))]
+        else:
+            df[c] = ""
+    return df
+
 def normalize_dimension_columns(df, extra_cols, multi_cols):
-    """Ensure correct types for dimension columns after upload/edit."""
     if df is None:
         return None
     df = df.copy()
@@ -59,13 +56,12 @@ def normalize_dimension_columns(df, extra_cols, multi_cols):
     return df
 
 def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
-    """Convert editor grid to long format; multi dims exported as ';' joined strings."""
-    long_rows = []
-    for ridx, row in grid_df.iterrows():
+    rows = []
+    for _, row in grid_df.iterrows():
         item_name = str(row.get("Item", "")).strip()
         for m in months_cols:
             val = pd.to_numeric(row.get(m, 0), errors="coerce")
-            val = 0 if pd.isna(val) else float(val)
+            val = 0.0 if pd.isna(val) else float(val)
             entry = {
                 "Budget": meta["budget_name"],
                 "Version": meta["version"],
@@ -78,28 +74,20 @@ def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
             }
             for c in extra_cols:
                 v = row.get(c, [] if c in multi_cols else "")
-                if c in multi_cols:
-                    entry[c] = ";".join(parse_multi(v))
-                else:
-                    entry[c] = "" if pd.isna(v) else str(v)
-            long_rows.append(entry)
-    return pd.DataFrame(long_rows).sort_values(["Item", "Month"]).reset_index(drop=True)
+                entry[c] = ";".join(parse_multi(v)) if c in multi_cols else ("" if pd.isna(v) else str(v))
+            rows.append(entry)
+    return pd.DataFrame(rows).sort_values(["Item", "Month"]).reset_index(drop=True)
 
 def find_duplicate_assignments(df, extra_cols, multi_cols):
-    """
-    Returns dict: {dim_name: [(value, [row_idx1,row_idx2,...]), ...]}
-    Duplicates mean the same dim value appears in more than one row.
-    """
     issues = {}
     if df is None or df.empty:
         return issues
     for c in extra_cols:
         used = {}
         if c in multi_cols:
-            # value used if present in that row's list
             for i, vals in enumerate(df[c].apply(parse_multi).tolist()):
                 for v in vals:
-                    used.setdefault(v, set()).add(i + 1)  # 1-based row index for UI
+                    used.setdefault(v, set()).add(i + 1)
         else:
             for i, v in enumerate(df[c].tolist()):
                 v = "" if pd.isna(v) else str(v).strip()
@@ -109,6 +97,16 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
         if dups:
             issues[c] = dups
     return issues
+
+def display_copy_for_editor(df, extra_cols, multi_cols):
+    """Make a read-only view for dimension columns (shown in table), while months remain editable."""
+    view = df.copy()
+    for c in extra_cols:
+        if c in multi_cols:
+            view[c] = view[c].apply(lambda lst: ";".join(parse_multi(lst)))
+        else:
+            view[c] = view[c].astype(str)
+    return view
 
 # ---------------- Sidebar: metadata ----------------
 st.sidebar.header("Budget Metadata")
@@ -127,35 +125,34 @@ if pd.Timestamp(end_month) < pd.Timestamp(start_month):
     st.warning("⚠️ 'To (month)' is before 'From (month)'. Swapping them.")
     start_month, end_month = end_month, start_month
 
-# Choose which dimensions to include
+# Choose dimensions
 extra_cols = st.sidebar.multiselect(
     "Use dimensions",
     ["Entity", "CostCenter", "Asset"],
     default=["Entity", "CostCenter", "Asset"]
 )
-multi_cols = {"Entity", "Asset"}  # allow many links per budget line
+multi_cols = {"Entity", "Asset"}  # allow many links per line
 
-# Catalogs for dropdowns
+# Catalogs
 with st.sidebar.expander("📚 Dimension catalogs"):
     def _parse_catalog(label, default_lines):
         txt = st.text_area(label, value="\n".join(default_lines), height=100)
         return [x.strip() for x in txt.splitlines() if x.strip()]
-
     entity_options = _parse_catalog("Entities (one per line)", ["E001", "E002", "E003"])
     costcenter_options = _parse_catalog("Cost Centers (one per line)", ["CC-Admin", "CC-OPS", "CC-ENG"])
     asset_options = _parse_catalog("Assets (one per line)", ["AS-TRUCK-01", "AS-GEN-02", "AS-CRANE-03"])
 
-# ---------------- Months for grid ----------------
+# ---------------- Months ----------------
 months = month_range(start_month, end_month)
 month_labels = [m.strftime("%Y-%m") for m in months]
 
-# ---------------- Data import / template ----------------
+# ---------------- Import / template ----------------
 st.subheader("1) Items & Monthly Planned amounts")
 
 with st.expander("📥 Import from CSV/Excel (optional)", expanded=False):
     st.markdown(
-        "- **Template** columns: `Item`, optional selected dimensions, then month columns like `YYYY-MM`.\n"
-        "- For multi dims (Entity/Asset), you may use **semicolon or comma** separators in a cell, e.g. `E001;E002`."
+        "- **Template** columns: `Item`, your selected dimensions, then months `YYYY-MM`.\n"
+        "- For multi dims (Entity/Asset) use **semicolon or comma** : `E001;E002`."
     )
     tmpl_cols = ["Item"] + extra_cols + month_labels
     tmpl_df = pd.DataFrame(columns=tmpl_cols)
@@ -174,19 +171,16 @@ with st.expander("📥 Import from CSV/Excel (optional)", expanded=False):
             uploaded_df = pd.read_csv(up)
         else:
             uploaded_df = pd.read_excel(up)
-
-        # Ensure required columns exist; add missing selected month columns with zeros
         for col in ["Item"] + extra_cols:
             if col not in uploaded_df.columns:
                 uploaded_df[col] = "" if col != "Item" else uploaded_df.get("Item", "")
         for m in month_labels:
             if m not in uploaded_df.columns:
                 uploaded_df[m] = 0
-
         uploaded_df = uploaded_df[["Item"] + extra_cols + month_labels]
         uploaded_df = normalize_dimension_columns(uploaded_df, extra_cols, multi_cols)
 
-# ---------------- Init / session state ----------------
+# ---------------- Init state ----------------
 default_items = ["Rentals", "Fuel", "Construction", "Salaries", "Marketing", "Equipment"]
 
 if (
@@ -201,49 +195,93 @@ if (
 if uploaded_df is not None:
     st.session_state["grid_df"] = uploaded_df.copy()
 
-st.caption("Tip: Double-click cells to edit. Use the ➕ button to add rows.")
+st.caption("Tip: Edit amounts in the table. Assign dimensions with the dropdowns below.")
 
-# ---------------- Editor config ----------------
+# ---------------- Data editor (dimensions read-only here) ----------------
 cfg = {}
-# numeric month columns
 for m in month_labels:
     cfg[m] = st.column_config.NumberColumn(m, min_value=0.0, step=1.0, help="Planned amount")
 
-# dimension columns
-if "Entity" in extra_cols:
-    cfg["Entity"] = st.column_config.MultiSelectColumn(
-        "Entity",
-        options=entity_options,
-        help="Select one or more Entities. Each Entity can be used in only one row.",
-    )
-if "CostCenter" in extra_cols:
-    cfg["CostCenter"] = st.column_config.SelectboxColumn(
-        "CostCenter",
-        options=[""] + costcenter_options,
-        help="Select one Cost Center. A Cost Center cannot be reused in another row.",
-    )
-if "Asset" in extra_cols:
-    cfg["Asset"] = st.column_config.MultiSelectColumn(
-        "Asset",
-        options=asset_options,
-        help="Select one or more Assets. Each Asset can be used in only one row.",
-    )
+for c in extra_cols:
+    # show as read-only strings; edit below in dropdown panel
+    cfg[c] = st.column_config.TextColumn(c, help="Managed via dropdowns below", disabled=True)
 
-grid_df = st.data_editor(
-    st.session_state["grid_df"],
+# Build display copy
+display_df = display_copy_for_editor(st.session_state["grid_df"], extra_cols, multi_cols)
+
+edited_display = st.data_editor(
+    display_df,
     num_rows="dynamic",
     column_config=cfg,
     use_container_width=True,
     key="grid_editor",
 )
 
-# Ensure proper types after editing
-grid_df = normalize_dimension_columns(grid_df, extra_cols, multi_cols)
+# Push edited item/months back into the real grid
+for col in ["Item"] + month_labels:
+    if col in edited_display.columns:
+        st.session_state["grid_df"][col] = edited_display[col]
 
-# ---------------- Validation: no duplicate assignments across rows ----------------
+grid_df = st.session_state["grid_df"]
+
+# ---------------- Dimension assignment panel (dropdowns) ----------------
+st.subheader("2) Assign Dimensions (no duplicates across rows)")
+
+def remaining_options(all_opts, taken_sets, current_set):
+    taken = set().union(*[set(parse_multi(s)) for s in taken_sets]) - set(parse_multi(current_set))
+    return [o for o in all_opts if o not in taken]
+
+def remaining_single_options(all_opts, taken_vals, current_val):
+    taken = set(v for v in taken_vals if v) - ({current_val} if current_val else set())
+    return [o for o in all_opts if o not in taken]
+
+if grid_df.empty:
+    st.info("Add at least one row in the table above.")
+else:
+    for idx in range(len(grid_df)):
+        row = grid_df.iloc[idx]
+        with st.expander(f"Row {idx+1}: {row.get('Item','(no item)')}", expanded=False):
+            # Entity (multi)
+            if "Entity" in extra_cols:
+                others = grid_df["Entity"].tolist()
+                opts = remaining_options(entity_options, others[:idx] + others[idx+1:], row.get("Entity", []))
+                sel = st.multiselect(
+                    "Entity (multi)",
+                    options=opts + [x for x in parse_multi(row.get("Entity", [])) if x not in opts],
+                    default=parse_multi(row.get("Entity", [])),
+                    key=f"entity_{idx}"
+                )
+                grid_df.at[idx, "Entity"] = sel
+
+            # CostCenter (single)
+            if "CostCenter" in extra_cols:
+                others = grid_df["CostCenter"].tolist()
+                cur = row.get("CostCenter", "")
+                opts = remaining_single_options(costcenter_options, others[:idx] + others[idx+1:], cur)
+                sel = st.selectbox(
+                    "CostCenter (single)",
+                    options=[""] + opts + ([cur] if cur and cur not in opts else []),
+                    index=([""] + opts + ([cur] if cur and cur not in opts else [])).index(cur) if cur in ([""] + opts + ([cur] if cur and cur not in opts else [])) else 0,
+                    key=f"cc_{idx}"
+                )
+                grid_df.at[idx, "CostCenter"] = sel
+
+            # Asset (multi)
+            if "Asset" in extra_cols:
+                others = grid_df["Asset"].tolist()
+                opts = remaining_options(asset_options, others[:idx] + others[idx+1:], row.get("Asset", []))
+                sel = st.multiselect(
+                    "Asset (multi)",
+                    options=opts + [x for x in parse_multi(row.get("Asset", [])) if x not in opts],
+                    default=parse_multi(row.get("Asset", [])),
+                    key=f"asset_{idx}"
+                )
+                grid_df.at[idx, "Asset"] = sel
+
+# ---------------- Validation ----------------
 issues = find_duplicate_assignments(grid_df, extra_cols, multi_cols)
 if issues:
-    st.error("🚫 Duplicate dimension assignments detected (a value is used in more than one row). Fix these before export:")
+    st.error("🚫 Duplicate dimension assignments detected. Fix these before export:")
     for dim, vals in issues.items():
         for v, rows in vals:
             st.write(f"- **{dim}** `{v}` used in rows: {rows}")
@@ -255,7 +293,6 @@ with st.expander("👀 Preview Totals", expanded=False):
     numeric = grid_df[month_labels].apply(pd.to_numeric, errors="coerce").fillna(0)
     row_totals = numeric.sum(axis=1)
     prev = grid_df[["Item"] + [c for c in extra_cols if c not in {"Entity", "Asset"}]].copy()
-    # show counts of multi dims for quick glance
     if "Entity" in extra_cols:
         prev["#Entities"] = grid_df["Entity"].apply(lambda x: len(parse_multi(x)))
     if "Asset" in extra_cols:
@@ -268,7 +305,7 @@ with st.expander("👀 Preview Totals", expanded=False):
     st.dataframe(col_totals.to_frame(name="Planned").T, use_container_width=True)
 
 # ---------------- Save / Export ----------------
-st.subheader("2) Save & Export")
+st.subheader("3) Save & Export")
 
 meta = {
     "budget_type": budget_type,
@@ -282,7 +319,6 @@ meta = {
     "extra_columns": extra_cols,
 }
 
-# Validate required fields
 errors = []
 if not meta["budget_name"]:
     errors.append("Budget Name is required.")
@@ -297,7 +333,6 @@ if errors:
     st.error(" • " + "\n • ".join(errors))
 else:
     long_df = to_long_format(grid_df, month_labels, meta, extra_cols, multi_cols)
-
     c1, c2 = st.columns(2)
     c1.download_button(
         "⬇️ Export Planned as CSV (long format)",
@@ -306,7 +341,6 @@ else:
         mime="text/csv",
         key="dl_csv"
     )
-
     payload = {
         "meta": meta,
         "data": long_df.assign(Month=lambda d: d["Month"].dt.strftime("%Y-%m-%d")).to_dict(orient="records")
@@ -319,4 +353,4 @@ else:
         key="dl_json"
     )
 
-st.caption("Notes: Entity & Asset accept multiple values; CostCenter is single. Export is blocked if any dimension value is used in more than one row. Multi values are stored as ';' joined strings.")
+st.caption("Dimensions via dropdowns below. Entity/Asset allow multiple per row; CostCenter is single. Values can’t repeat across rows; duplicates block export.")
