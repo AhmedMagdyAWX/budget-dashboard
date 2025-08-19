@@ -1,10 +1,10 @@
-# pages/1_Create_Budget.py  — inline editors with hierarchy + validation (graceful fallback)
+# pages/1_Create_Budget.py  — inline editors with hierarchy + validation (upgrade-safe)
 
 import streamlit as st
 import pandas as pd
 from datetime import date
 import json
-from collections import defaultdict
+from collections import defaultdict, deque
 
 st.set_page_config(page_title="Create Budget", layout="wide")
 st.title("🧪 Create Budget")
@@ -34,8 +34,8 @@ def make_empty_grid(items, months, extra_cols, multi_cols):
     df = pd.DataFrame(columns=cols)
     if items:
         df["Item"] = items
-    df["Code"] = ""  # user will fill
-    df["ParentCode"] = ""
+    df["Code"] = ""          # user will fill
+    df["ParentCode"] = ""    # user will fill
     # init months
     for m in [m.strftime("%Y-%m") for m in months]:
         df[m] = 0
@@ -48,19 +48,21 @@ def make_empty_grid(items, months, extra_cols, multi_cols):
     return df
 
 def normalize_dimension_columns(df, extra_cols, multi_cols):
-    """Ensure proper Python types post-edit/import."""
+    """Ensure proper Python types post-edit/import and presence of hierarchy cols."""
     if df is None:
         return None
     df = df.copy()
+    # hierarchy cols must exist
+    for c in ["Code","ParentCode","Item"]:
+        if c not in df.columns:
+            df[c] = "" if c != "Item" else df.get("Item", "")
     for c in extra_cols:
         if c in multi_cols:
-            df[c] = df[c].apply(parse_multi)
+            df[c] = df[c].apply(parse_multi) if c in df.columns else pd.Series([[] for _ in range(len(df))], index=df.index)
         else:
-            df[c] = df[c].apply(lambda v: "" if pd.isna(v) else str(v).strip())
-    # string-ify codes
+            df[c] = df[c].apply(lambda v: "" if pd.isna(v) else str(v).strip()) if c in df.columns else ""
     for c in ["Code","ParentCode"]:
-        if c in df.columns:
-            df[c] = df[c].fillna("").astype(str)
+        df[c] = df[c].fillna("").astype(str)
     return df
 
 def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
@@ -102,7 +104,7 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
                     used.setdefault(v, set()).add(i + 1)
         else:
             for i, v in enumerate(df[c].tolist()):
-                v = "" if pd.isna(v) else str(v).strip()
+                v = "" if pd.isna(v) else str(v).str ip() if isinstance(v, pd.Series) else ("" if pd.isna(v) else str(v).strip())
                 if v:
                     used.setdefault(v, set()).add(i + 1)
         dups = [(val, sorted(list(rows))) for val, rows in used.items() if len(rows) > 1]
@@ -111,32 +113,23 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
     return issues
 
 def detect_cycles(pairs):
-    """
-    pairs: list of (parent, child)
-    return True if a cycle exists.
-    """
+    """pairs: list of (parent, child). Return True if a cycle exists."""
     graph = defaultdict(list)
     indeg = defaultdict(int)
     nodes = set()
     for p,c in pairs:
         if p and c:
-            graph[p].append(c)
-            indeg[c]+=1
+            graph[p].append(c); indeg[c]+=1
             nodes.add(p); nodes.add(c)
         elif c:
             nodes.add(c)
-    # Kahn
-    q = [n for n in nodes if indeg[n]==0]
+    dq = deque([n for n in nodes if indeg[n]==0])
     count=0
-    from collections import deque
-    dq = deque(q)
     while dq:
-        u = dq.popleft()
-        count += 1
+        u = dq.popleft(); count += 1
         for v in graph.get(u, []):
             indeg[v]-=1
-            if indeg[v]==0:
-                dq.append(v)
+            if indeg[v]==0: dq.append(v)
     return count != len(nodes)
 
 # ---------------- Sidebar: metadata ----------------
@@ -229,6 +222,23 @@ if uploaded_df is not None:
 
 grid_df = st.session_state["grid_df"]
 
+# --- UPGRADE-SAFE: ensure required columns exist in current session grid ---
+for col in ["Code","ParentCode","Item"]:
+    if col not in grid_df.columns:
+        # add with sensible defaults
+        grid_df[col] = "" if col != "Item" else grid_df.get("Item", "")
+for c in extra_cols:
+    if c not in grid_df.columns:
+        if c in multi_cols:
+            grid_df[c] = pd.Series([[] for _ in range(len(grid_df))], index=grid_df.index)
+        else:
+            grid_df[c] = ""
+for m in month_labels:
+    if m not in grid_df.columns:
+        grid_df[m] = 0
+# normalize types after patch
+grid_df = normalize_dimension_columns(grid_df, extra_cols, multi_cols)
+
 # ---------------- Build inline editors with graceful fallback ----------------
 has_multi  = hasattr(st.column_config, "MultiSelectColumn")
 has_select = hasattr(st.column_config, "SelectboxColumn")
@@ -236,7 +246,10 @@ has_select = hasattr(st.column_config, "SelectboxColumn")
 cfg = {}
 # Hierarchy editors
 cfg["Code"] = st.column_config.TextColumn("Code", help="Unique ID for this line (e.g., RENT, FUEL01).")
-parent_options = [""] + sorted([c for c in grid_df["Code"].unique() if isinstance(c, str) and c])
+
+# Parent options based on current codes (may be blank initially)
+existing_codes = sorted([c for c in grid_df["Code"].astype(str).unique() if c])
+parent_options = [""] + existing_codes
 if has_select:
     cfg["ParentCode"] = st.column_config.SelectboxColumn("ParentCode", options=parent_options, help="Parent line code (optional).")
 else:
@@ -274,136 +287,4 @@ edited = st.data_editor(
     key="grid_editor",
 )
 
-# Normalize types after edit
-edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
-
-# ---- TREE VALIDATION & LEAF ENFORCEMENT ----
-df_lines = edited.copy()
-
-# unique codes (non-empty)
-dups = df_lines["Code"].astype(str).str.strip()
-dups = dups[dups != ""]
-duplicate_codes = dups[dups.duplicated()].unique().tolist()
-
-# no self-parent
-self_parent = df_lines[df_lines["Code"].astype(str).str.strip()
-                       == df_lines["ParentCode"].astype(str).str.strip()]
-
-# cycles
-pairs = []
-for _, r in df_lines.iterrows():
-    p = str(r.get("ParentCode","")).strip()
-    c = str(r.get("Code","")).strip()
-    if c: pairs.append((p, c))
-cycle_flag = detect_cycles(pairs)
-
-# parent/leaf flags
-is_parent = df_lines["Code"].astype(str).str.strip().isin(
-    df_lines["ParentCode"].astype(str).str.strip().replace("", pd.NA).dropna()
-)
-df_lines["IsParent"] = is_parent
-
-# Enforce leaf-only input: zero month values on parents
-month_cols = [c for c in df_lines.columns if len(c) == 7 and c[4] == "-" and c[:4].isdigit()]
-if is_parent.any():
-    df_lines.loc[df_lines["IsParent"], month_cols] = 0
-
-# Push back sanitized
-st.session_state["grid_df"] = df_lines
-grid_df = df_lines
-
-# Report validation issues
-tree_errors = []
-if duplicate_codes:
-    tree_errors.append(f"Duplicate Codes: {', '.join(duplicate_codes)}")
-if len(self_parent) > 0:
-    tree_errors.append("Self-parenting detected (a row has ParentCode equal to its own Code).")
-if cycle_flag:
-    tree_errors.append("Hierarchy cycle detected. Fix ParentCode assignments.")
-if tree_errors:
-    st.error("🧩 Hierarchy errors:\n- " + "\n- ".join(tree_errors))
-
-st.caption("Tip: Enter values only on leaf lines. Parent lines are auto-summed in the viewer.")
-
-# ---------------- Validation (no duplicate dimension assignments on leaves) ----------------
-leaf_mask = ~grid_df["IsParent"] if "IsParent" in grid_df.columns else pd.Series(True, index=grid_df.index)
-issues = find_duplicate_assignments(grid_df[leaf_mask].reset_index(drop=True), extra_cols, multi_cols)
-if issues:
-    st.error("🚫 Duplicate dimension assignments detected on leaf rows. Fix these before export:")
-    for dim, vals in issues.items():
-        for v, rows in vals:
-            st.write(f"- **{dim}** `{v}` used in rows: {rows}")
-else:
-    st.success("✅ No duplicate dimension assignments (on leaves).")
-
-# ---------------- Totals preview ----------------
-with st.expander("👀 Preview Totals", expanded=False):
-    numeric = grid_df[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-    row_totals = numeric.sum(axis=1)
-    prev = grid_df[["Code","ParentCode","Item"] + [c for c in extra_cols]].copy()
-    if "Entity" in extra_cols:
-        prev["#Entities"] = grid_df["Entity"].apply(lambda x: len(parse_multi(x)))
-    if "Asset" in extra_cols:
-        prev["#Assets"] = grid_df["Asset"].apply(lambda x: len(parse_multi(x)))
-    prev["Row Total Planned"] = row_totals
-    st.dataframe(prev, use_container_width=True)
-
-    col_totals = numeric.sum(axis=0)
-    st.write("Per-Month Totals:")
-    st.dataframe(col_totals.to_frame(name="Planned").T, use_container_width=True)
-
-# ---------------- Save / Export ----------------
-st.subheader("2) Save & Export")
-
-meta = {
-    "budget_type": budget_type,
-    "budget_name": budget_name.strip(),
-    "project_name": project_name.strip(),
-    "version": version.strip(),
-    "currency": currency.strip(),
-    "start_month": months.min().strftime("%Y-%m-%d") if len(months) else "",
-    "end_month": months.max().strftime("%Y-%m-%d") if len(months) else "",
-    "months_count": len(months),
-    "extra_columns": extra_cols,
-}
-
-errors = []
-if not meta["budget_name"]:
-    errors.append("Budget Name is required.")
-if budget_type == "Project" and not meta["project_name"]:
-    errors.append("Project Name is required for Project budgets.")
-if len(months) == 0:
-    errors.append("Please choose a valid month range.")
-if tree_errors:
-    errors.append("Fix hierarchy errors before exporting.")
-if issues:
-    errors.append("Resolve duplicate dimension assignments before exporting.")
-
-if errors:
-    st.error(" • " + "\n • ".join(errors))
-else:
-    long_df = to_long_format(grid_df, month_labels, meta, extra_cols, multi_cols)
-    c1, c2 = st.columns(2)
-    c1.download_button(
-        "⬇️ Export Planned as CSV (long format)",
-        long_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"{meta['budget_name']}_{meta['version']}_planned.csv",
-        mime="text/csv",
-        key="dl_csv"
-    )
-    payload = {
-        "meta": meta,
-        "data": long_df.assign(Month=lambda d: d["Month"].dt.strftime("%Y-%m-%d")).to_dict(orient="records")
-    }
-    c2.download_button(
-        "⬇️ Export Budget as JSON",
-        json.dumps(payload, indent=2).encode("utf-8"),
-        file_name=f"{meta['budget_name']}_{meta['version']}.json",
-        mime="application/json",
-        key="dl_json"
-    )
-
-st.caption(
-    "Hierarchy: use Code & ParentCode. Parent rows are zeroed (leaf-only input). "
-    "Dimensions on leaves only; duplicates across leaf rows are blocked."
-)
+# Normalize types
