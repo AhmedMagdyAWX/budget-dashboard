@@ -1,4 +1,4 @@
-# pages/1_Create_Budget.py  (compat: no MultiSelectColumn required)
+# pages/1_Create_Budget.py  — inline grid editors for dimensions
 
 import streamlit as st
 import pandas as pd
@@ -98,16 +98,6 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
             issues[c] = dups
     return issues
 
-def display_copy_for_editor(df, extra_cols, multi_cols):
-    """Make a read-only view for dimension columns (shown in table), while months remain editable."""
-    view = df.copy()
-    for c in extra_cols:
-        if c in multi_cols:
-            view[c] = view[c].apply(lambda lst: ";".join(parse_multi(lst)))
-        else:
-            view[c] = view[c].astype(str)
-    return view
-
 # ---------------- Sidebar: metadata ----------------
 st.sidebar.header("Budget Metadata")
 
@@ -147,7 +137,7 @@ months = month_range(start_month, end_month)
 month_labels = [m.strftime("%Y-%m") for m in months]
 
 # ---------------- Import / template ----------------
-st.subheader("1) Items & Monthly Planned amounts")
+st.subheader("1) Items, Dimensions & Monthly Planned amounts")
 
 with st.expander("📥 Import from CSV/Excel (optional)", expanded=False):
     st.markdown(
@@ -195,90 +185,67 @@ if (
 if uploaded_df is not None:
     st.session_state["grid_df"] = uploaded_df.copy()
 
-st.caption("Tip: Edit amounts in the table. Assign dimensions with the dropdowns below.")
+grid_df = st.session_state["grid_df"]
 
-# ---------------- Data editor (dimensions read-only here) ----------------
+# ---------------- Build inline editors ----------------
+# Check for MultiSelectColumn availability (older Streamlit versions may not have it)
+has_multi = hasattr(st.column_config, "MultiSelectColumn")
+
+if not has_multi:
+    st.warning(
+        "Your Streamlit version doesn’t support in-grid MultiSelect dropdowns. "
+        "Please set `streamlit>=1.37` in requirements.txt and redeploy for inline dimension editors. "
+        "The grid will still work, but multi dimensions will appear as plain text."
+    )
+
 cfg = {}
+
+# Item text
+cfg["Item"] = st.column_config.TextColumn("Item", help="Budget line item / category")
+
+# Month numeric editors
 for m in month_labels:
     cfg[m] = st.column_config.NumberColumn(m, min_value=0.0, step=1.0, help="Planned amount")
 
-for c in extra_cols:
-    # show as read-only strings; edit below in dropdown panel
-    cfg[c] = st.column_config.TextColumn(c, help="Managed via dropdowns below", disabled=True)
+# Dimension editors inside the grid
+if "Entity" in extra_cols:
+    if has_multi:
+        cfg["Entity"] = st.column_config.MultiSelectColumn(
+            "Entity", options=entity_options, help="Select one or more Entities"
+        )
+    else:
+        cfg["Entity"] = st.column_config.TextColumn("Entity", help="Enter semicolon/comma-separated list")
 
-# Build display copy
-display_df = display_copy_for_editor(st.session_state["grid_df"], extra_cols, multi_cols)
+if "CostCenter" in extra_cols:
+    cfg["CostCenter"] = st.column_config.SelectboxColumn(
+        "CostCenter", options=[""] + costcenter_options, help="Single selection"
+    )
 
-edited_display = st.data_editor(
-    display_df,
+if "Asset" in extra_cols:
+    if has_multi:
+        cfg["Asset"] = st.column_config.MultiSelectColumn(
+            "Asset", options=asset_options, help="Select one or more Assets"
+        )
+    else:
+        cfg["Asset"] = st.column_config.TextColumn("Asset", help="Enter semicolon/comma-separated list")
+
+# ---------------- Data editor ----------------
+edited = st.data_editor(
+    grid_df,
     num_rows="dynamic",
     column_config=cfg,
     use_container_width=True,
     key="grid_editor",
 )
 
-# Push edited item/months back into the real grid
-for col in ["Item"] + month_labels:
-    if col in edited_display.columns:
-        st.session_state["grid_df"][col] = edited_display[col]
+# Normalize types after edit (MultiSelectColumn returns list, TextColumn returns str)
+edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
 
-grid_df = st.session_state["grid_df"]
+# Keep in session
+st.session_state["grid_df"] = edited
+grid_df = edited
 
-# ---------------- Dimension assignment panel (dropdowns) ----------------
-st.subheader("2) Assign Dimensions (no duplicates across rows)")
-
-def remaining_options(all_opts, taken_sets, current_set):
-    taken = set().union(*[set(parse_multi(s)) for s in taken_sets]) - set(parse_multi(current_set))
-    return [o for o in all_opts if o not in taken]
-
-def remaining_single_options(all_opts, taken_vals, current_val):
-    taken = set(v for v in taken_vals if v) - ({current_val} if current_val else set())
-    return [o for o in all_opts if o not in taken]
-
-if grid_df.empty:
-    st.info("Add at least one row in the table above.")
-else:
-    for idx in range(len(grid_df)):
-        row = grid_df.iloc[idx]
-        with st.expander(f"Row {idx+1}: {row.get('Item','(no item)')}", expanded=False):
-            # Entity (multi)
-            if "Entity" in extra_cols:
-                others = grid_df["Entity"].tolist()
-                opts = remaining_options(entity_options, others[:idx] + others[idx+1:], row.get("Entity", []))
-                sel = st.multiselect(
-                    "Entity (multi)",
-                    options=opts + [x for x in parse_multi(row.get("Entity", [])) if x not in opts],
-                    default=parse_multi(row.get("Entity", [])),
-                    key=f"entity_{idx}"
-                )
-                grid_df.at[idx, "Entity"] = sel
-
-            # CostCenter (single)
-            if "CostCenter" in extra_cols:
-                others = grid_df["CostCenter"].tolist()
-                cur = row.get("CostCenter", "")
-                opts = remaining_single_options(costcenter_options, others[:idx] + others[idx+1:], cur)
-                sel = st.selectbox(
-                    "CostCenter (single)",
-                    options=[""] + opts + ([cur] if cur and cur not in opts else []),
-                    index=([""] + opts + ([cur] if cur and cur not in opts else [])).index(cur) if cur in ([""] + opts + ([cur] if cur and cur not in opts else [])) else 0,
-                    key=f"cc_{idx}"
-                )
-                grid_df.at[idx, "CostCenter"] = sel
-
-            # Asset (multi)
-            if "Asset" in extra_cols:
-                others = grid_df["Asset"].tolist()
-                opts = remaining_options(asset_options, others[:idx] + others[idx+1:], row.get("Asset", []))
-                sel = st.multiselect(
-                    "Asset (multi)",
-                    options=opts + [x for x in parse_multi(row.get("Asset", [])) if x not in opts],
-                    default=parse_multi(row.get("Asset", [])),
-                    key=f"asset_{idx}"
-                )
-                grid_df.at[idx, "Asset"] = sel
-
-# ---------------- Validation ----------------
+# ---------------- Validation (no duplicates across rows) ----------------
 issues = find_duplicate_assignments(grid_df, extra_cols, multi_cols)
 if issues:
     st.error("🚫 Duplicate dimension assignments detected. Fix these before export:")
@@ -292,7 +259,8 @@ else:
 with st.expander("👀 Preview Totals", expanded=False):
     numeric = grid_df[month_labels].apply(pd.to_numeric, errors="coerce").fillna(0)
     row_totals = numeric.sum(axis=1)
-    prev = grid_df[["Item"] + [c for c in extra_cols if c not in {"Entity", "Asset"}]].copy()
+    prev = grid_df[["Item"] + [c for c in extra_cols]].copy()
+    # quick counts for multi dims
     if "Entity" in extra_cols:
         prev["#Entities"] = grid_df["Entity"].apply(lambda x: len(parse_multi(x)))
     if "Asset" in extra_cols:
@@ -305,7 +273,7 @@ with st.expander("👀 Preview Totals", expanded=False):
     st.dataframe(col_totals.to_frame(name="Planned").T, use_container_width=True)
 
 # ---------------- Save / Export ----------------
-st.subheader("3) Save & Export")
+st.subheader("2) Save & Export")
 
 meta = {
     "budget_type": budget_type,
@@ -353,4 +321,4 @@ else:
         key="dl_json"
     )
 
-st.caption("Dimensions via dropdowns below. Entity/Asset allow multiple per row; CostCenter is single. Values can’t repeat across rows; duplicates block export.")
+st.caption("Inline editors enabled. Entity & Asset support multi-select; CostCenter is single. Duplicates across rows are disallowed at export.")
