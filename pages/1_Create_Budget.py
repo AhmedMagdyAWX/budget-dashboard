@@ -1,9 +1,10 @@
-# pages/1_Create_Budget.py  — inline editors with graceful fallback
+# pages/1_Create_Budget.py  — inline editors with hierarchy + validation (graceful fallback)
 
 import streamlit as st
 import pandas as pd
 from datetime import date
 import json
+from collections import defaultdict
 
 st.set_page_config(page_title="Create Budget", layout="wide")
 st.title("🧪 Create Budget")
@@ -29,10 +30,12 @@ def parse_multi(cell):
     return [p for p in parts if p]
 
 def make_empty_grid(items, months, extra_cols, multi_cols):
-    cols = ["Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
+    cols = ["Code", "ParentCode", "Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
     df = pd.DataFrame(columns=cols)
     if items:
         df["Item"] = items
+    df["Code"] = ""  # user will fill
+    df["ParentCode"] = ""
     # init months
     for m in [m.strftime("%Y-%m") for m in months]:
         df[m] = 0
@@ -54,12 +57,18 @@ def normalize_dimension_columns(df, extra_cols, multi_cols):
             df[c] = df[c].apply(parse_multi)
         else:
             df[c] = df[c].apply(lambda v: "" if pd.isna(v) else str(v).strip())
+    # string-ify codes
+    for c in ["Code","ParentCode"]:
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str)
     return df
 
 def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
     rows = []
     for _, row in grid_df.iterrows():
         item_name = str(row.get("Item", "")).strip()
+        code = str(row.get("Code","")).strip()
+        parent = str(row.get("ParentCode","")).strip()
         for m in months_cols:
             val = pd.to_numeric(row.get(m, 0), errors="coerce")
             val = 0.0 if pd.isna(val) else float(val)
@@ -69,6 +78,8 @@ def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
                 "BudgetType": meta["budget_type"],
                 "Project": meta.get("project_name") if meta["budget_type"] == "Project" else "",
                 "Currency": meta["currency"],
+                "Code": code,
+                "ParentCode": parent,
                 "Month": pd.to_datetime(m + "-01"),
                 "Item": item_name,
                 "Planned": val,
@@ -77,7 +88,7 @@ def to_long_format(grid_df, months_cols, meta, extra_cols, multi_cols):
                 v = row.get(c, [] if c in multi_cols else "")
                 entry[c] = ";".join(parse_multi(v)) if c in multi_cols else ("" if pd.isna(v) else str(v))
             rows.append(entry)
-    return pd.DataFrame(rows).sort_values(["Item", "Month"]).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(["Code","Item","Month"]).reset_index(drop=True)
 
 def find_duplicate_assignments(df, extra_cols, multi_cols):
     issues = {}
@@ -88,7 +99,7 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
         if c in multi_cols:
             for i, vals in enumerate(df[c].apply(parse_multi).tolist()):
                 for v in vals:
-                    used.setdefault(v, set()).add(i + 1)  # 1-based row index
+                    used.setdefault(v, set()).add(i + 1)
         else:
             for i, v in enumerate(df[c].tolist()):
                 v = "" if pd.isna(v) else str(v).strip()
@@ -98,6 +109,35 @@ def find_duplicate_assignments(df, extra_cols, multi_cols):
         if dups:
             issues[c] = dups
     return issues
+
+def detect_cycles(pairs):
+    """
+    pairs: list of (parent, child)
+    return True if a cycle exists.
+    """
+    graph = defaultdict(list)
+    indeg = defaultdict(int)
+    nodes = set()
+    for p,c in pairs:
+        if p and c:
+            graph[p].append(c)
+            indeg[c]+=1
+            nodes.add(p); nodes.add(c)
+        elif c:
+            nodes.add(c)
+    # Kahn
+    q = [n for n in nodes if indeg[n]==0]
+    count=0
+    from collections import deque
+    dq = deque(q)
+    while dq:
+        u = dq.popleft()
+        count += 1
+        for v in graph.get(u, []):
+            indeg[v]-=1
+            if indeg[v]==0:
+                dq.append(v)
+    return count != len(nodes)
 
 # ---------------- Sidebar: metadata ----------------
 st.sidebar.header("Budget Metadata")
@@ -138,14 +178,14 @@ months = month_range(start_month, end_month)
 month_labels = [m.strftime("%Y-%m") for m in months]
 
 # ---------------- Import / template ----------------
-st.subheader("1) Items, Dimensions & Monthly Planned amounts")
+st.subheader("1) Items, Hierarchy & Monthly Planned amounts")
 
 with st.expander("📥 Import from CSV/Excel (optional)", expanded=False):
     st.markdown(
-        "- **Template** columns: `Item`, your selected dimensions, then months `YYYY-MM`.\n"
+        "- **Template** columns: `Code`, `ParentCode`, `Item`, your selected dimensions, then months `YYYY-MM`.\n"
         "- For multi dims (Entity/Asset) use **semicolon or comma** : `E001;E002`."
     )
-    tmpl_cols = ["Item"] + extra_cols + month_labels
+    tmpl_cols = ["Code","ParentCode","Item"] + extra_cols + month_labels
     tmpl_df = pd.DataFrame(columns=tmpl_cols)
     st.download_button(
         "⬇️ Download empty template (CSV)",
@@ -162,17 +202,18 @@ with st.expander("📥 Import from CSV/Excel (optional)", expanded=False):
             uploaded_df = pd.read_csv(up)
         else:
             uploaded_df = pd.read_excel(up)
-        for col in ["Item"] + extra_cols:
+        # Ensure required columns exist
+        for col in ["Code","ParentCode","Item"] + extra_cols:
             if col not in uploaded_df.columns:
                 uploaded_df[col] = "" if col != "Item" else uploaded_df.get("Item", "")
         for m in month_labels:
             if m not in uploaded_df.columns:
                 uploaded_df[m] = 0
-        uploaded_df = uploaded_df[["Item"] + extra_cols + month_labels]
+        uploaded_df = uploaded_df[["Code","ParentCode","Item"] + extra_cols + month_labels]
         uploaded_df = normalize_dimension_columns(uploaded_df, extra_cols, multi_cols)
 
 # ---------------- Init state ----------------
-default_items = ["Rentals", "Fuel", "Construction", "Salaries", "Marketing", "Equipment"]
+default_items = ["Operations","Rentals","Fuel","Construction","Overheads","Salaries","Marketing"]
 
 if (
     "grid_df" not in st.session_state
@@ -188,102 +229,118 @@ if uploaded_df is not None:
 
 grid_df = st.session_state["grid_df"]
 
-# ---------------- Build inline editors with fallback ----------------
-has_multi = hasattr(st.column_config, "MultiSelectColumn")
+# ---------------- Build inline editors with graceful fallback ----------------
+has_multi  = hasattr(st.column_config, "MultiSelectColumn")
 has_select = hasattr(st.column_config, "SelectboxColumn")
 
 cfg = {}
+# Hierarchy editors
+cfg["Code"] = st.column_config.TextColumn("Code", help="Unique ID for this line (e.g., RENT, FUEL01).")
+parent_options = [""] + sorted([c for c in grid_df["Code"].unique() if isinstance(c, str) and c])
+if has_select:
+    cfg["ParentCode"] = st.column_config.SelectboxColumn("ParentCode", options=parent_options, help="Parent line code (optional).")
+else:
+    cfg["ParentCode"] = st.column_config.TextColumn("ParentCode", help="Parent line code (optional).")
+
+# Item
 cfg["Item"] = st.column_config.TextColumn("Item", help="Budget line item / category")
 
 # Month numeric editors
 for m in month_labels:
     cfg[m] = st.column_config.NumberColumn(m, min_value=0.0, step=1.0, help="Planned amount")
 
-# Build the editable DataFrame and column editors
-if has_multi:
-    # We can pass list-typed columns directly
-    if "Entity" in extra_cols:
+# Dimension editors
+if "Entity" in extra_cols:
+    if has_multi:
         cfg["Entity"] = st.column_config.MultiSelectColumn("Entity", options=entity_options, help="Select one or more Entities")
-    if "CostCenter" in extra_cols:
-        if has_select:
-            cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
-        else:
-            cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a value")
-    if "Asset" in extra_cols:
+    else:
+        cfg["Entity"] = st.column_config.TextColumn("Entity", help="Enter semicolon/comma-separated list")
+if "CostCenter" in extra_cols:
+    if has_select:
+        cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
+    else:
+        cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a value")
+if "Asset" in extra_cols:
+    if has_multi:
         cfg["Asset"] = st.column_config.MultiSelectColumn("Asset", options=asset_options, help="Select one or more Assets")
+    else:
+        cfg["Asset"] = st.column_config.TextColumn("Asset", help="Enter semicolon/comma-separated list")
 
-    edited = st.data_editor(
-        grid_df,
-        num_rows="dynamic",
-        column_config=cfg,
-        use_container_width=True,
-        key="grid_editor",
-    )
+edited = st.data_editor(
+    grid_df,
+    num_rows="dynamic",
+    column_config=cfg,
+    use_container_width=True,
+    key="grid_editor",
+)
 
-    # Normalize types after edit (MultiSelect returns lists)
-    edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
+# Normalize types after edit
+edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
 
-else:
-    # FALLBACK: older Streamlit — must pass strings (not lists) for multi dims.
-    display_df = grid_df.copy()
-    for c in extra_cols:
-        if c in multi_cols:
-            display_df[c] = display_df[c].apply(lambda lst: ";".join(parse_multi(lst)))  # show as "E001;E002"
-        else:
-            display_df[c] = display_df[c].astype(str)
+# ---- TREE VALIDATION & LEAF ENFORCEMENT ----
+df_lines = edited.copy()
 
-    # Column editors for fallback (text for multi dims, selectbox if available for CostCenter)
-    if "Entity" in extra_cols:
-        cfg["Entity"] = st.column_config.TextColumn("Entity", help="Enter values from catalog, e.g. E001;E002")
-    if "CostCenter" in extra_cols:
-        if has_select:
-            cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
-        else:
-            cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a cost center")
-    if "Asset" in extra_cols:
-        cfg["Asset"] = st.column_config.TextColumn("Asset", help="Enter values from catalog, e.g. AS-TRUCK-01;AS-GEN-02")
+# unique codes (non-empty)
+dups = df_lines["Code"].astype(str).str.strip()
+dups = dups[dups != ""]
+duplicate_codes = dups[dups.duplicated()].unique().tolist()
 
-    edited_display = st.data_editor(
-        display_df,
-        num_rows="dynamic",
-        column_config=cfg,
-        use_container_width=True,
-        key="grid_editor",
-    )
+# no self-parent
+self_parent = df_lines[df_lines["Code"].astype(str).str.strip()
+                       == df_lines["ParentCode"].astype(str).str.strip()]
 
-    # Convert back: strings -> lists for multi dims; keep text for singles
-    edited = grid_df.copy()
-    # Push simple columns (Item + months + CostCenter string)
-    for col in ["Item"] + month_labels + ([ "CostCenter" ] if "CostCenter" in extra_cols else []):
-        if col in edited_display.columns:
-            edited[col] = edited_display[col]
-    # Parse multi dims back to lists
-    for c in extra_cols:
-        if c in multi_cols and c in edited_display.columns:
-            edited[c] = edited_display[c].apply(parse_multi)
+# cycles
+pairs = []
+for _, r in df_lines.iterrows():
+    p = str(r.get("ParentCode","")).strip()
+    c = str(r.get("Code","")).strip()
+    if c: pairs.append((p, c))
+cycle_flag = detect_cycles(pairs)
 
-    # Normalize types
-    edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
+# parent/leaf flags
+is_parent = df_lines["Code"].astype(str).str.strip().isin(
+    df_lines["ParentCode"].astype(str).str.strip().replace("", pd.NA).dropna()
+)
+df_lines["IsParent"] = is_parent
 
-# Persist
-st.session_state["grid_df"] = edited
-grid_df = edited
+# Enforce leaf-only input: zero month values on parents
+month_cols = [c for c in df_lines.columns if len(c) == 7 and c[4] == "-" and c[:4].isdigit()]
+if is_parent.any():
+    df_lines.loc[df_lines["IsParent"], month_cols] = 0
 
-# ---------------- Validation (no duplicates across rows) ----------------
-issues = find_duplicate_assignments(grid_df, extra_cols, multi_cols)
+# Push back sanitized
+st.session_state["grid_df"] = df_lines
+grid_df = df_lines
+
+# Report validation issues
+tree_errors = []
+if duplicate_codes:
+    tree_errors.append(f"Duplicate Codes: {', '.join(duplicate_codes)}")
+if len(self_parent) > 0:
+    tree_errors.append("Self-parenting detected (a row has ParentCode equal to its own Code).")
+if cycle_flag:
+    tree_errors.append("Hierarchy cycle detected. Fix ParentCode assignments.")
+if tree_errors:
+    st.error("🧩 Hierarchy errors:\n- " + "\n- ".join(tree_errors))
+
+st.caption("Tip: Enter values only on leaf lines. Parent lines are auto-summed in the viewer.")
+
+# ---------------- Validation (no duplicate dimension assignments on leaves) ----------------
+leaf_mask = ~grid_df["IsParent"] if "IsParent" in grid_df.columns else pd.Series(True, index=grid_df.index)
+issues = find_duplicate_assignments(grid_df[leaf_mask].reset_index(drop=True), extra_cols, multi_cols)
 if issues:
-    st.error("🚫 Duplicate dimension assignments detected. Fix these before export:")
+    st.error("🚫 Duplicate dimension assignments detected on leaf rows. Fix these before export:")
     for dim, vals in issues.items():
         for v, rows in vals:
             st.write(f"- **{dim}** `{v}` used in rows: {rows}")
 else:
-    st.success("✅ No duplicate dimension assignments.")
+    st.success("✅ No duplicate dimension assignments (on leaves).")
 
 # ---------------- Totals preview ----------------
 with st.expander("👀 Preview Totals", expanded=False):
-    numeric = grid_df[month_labels].apply(pd.to_numeric, errors="coerce").fillna(0)
+    numeric = grid_df[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
     row_totals = numeric.sum(axis=1)
-    prev = grid_df[["Item"] + [c for c in extra_cols]].copy()
+    prev = grid_df[["Code","ParentCode","Item"] + [c for c in extra_cols]].copy()
     if "Entity" in extra_cols:
         prev["#Entities"] = grid_df["Entity"].apply(lambda x: len(parse_multi(x)))
     if "Asset" in extra_cols:
@@ -317,6 +374,8 @@ if budget_type == "Project" and not meta["project_name"]:
     errors.append("Project Name is required for Project budgets.")
 if len(months) == 0:
     errors.append("Please choose a valid month range.")
+if tree_errors:
+    errors.append("Fix hierarchy errors before exporting.")
 if issues:
     errors.append("Resolve duplicate dimension assignments before exporting.")
 
@@ -345,6 +404,6 @@ else:
     )
 
 st.caption(
-    "Inline editors enabled when available. On older Streamlit, type multi values as 'A;B;C'. "
-    "Duplicates across rows are disallowed at export."
+    "Hierarchy: use Code & ParentCode. Parent rows are zeroed (leaf-only input). "
+    "Dimensions on leaves only; duplicates across leaf rows are blocked."
 )
