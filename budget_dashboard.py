@@ -1,64 +1,35 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from collections import defaultdict, deque
 
 st.set_page_config(page_title="Budget Dashboard", layout="wide")
-st.title("📊 Budget Dashboard (Budgets • Versions • Items • Hierarchy)")
 
-# ---------------- Helpers ----------------
+st.title("📊 Budget Dashboard (Budgets • Versions • Items)")
+
+# ---------- Sample Data ----------
 @st.cache_data
 def generate_sample_data():
-    """
-    Demo dataset with Budgets, Versions, Items, Codes/ParentCodes, Month, Planned, Actual.
-    Parents have 0 input; leaves carry amounts.
-    """
     budgets = ["Company", "Project A", "Project B"]
-    versions = [f"V{i}" for i in range(1, 6)]
-    months = pd.date_range("2025-01-01", "2025-12-01", freq="MS")
-
-    # A small hierarchy:
-    # ROOT (no parent)
-    # ├─ OPR (Operations)
-    # │  ├─ RENT (Rentals)   [leaf]
-    # │  ├─ FUEL (Fuel)      [leaf]
-    # │  └─ CONST (Construction) [leaf]
-    # └─ OVH (Overheads)
-    #    ├─ SAL (Salaries)   [leaf]
-    #    └─ MKT (Marketing)  [leaf]
-    nodes = [
-        ("ROOT", "",        "Total"),
-        ("OPR",  "ROOT",    "Operations"),
-        ("RENT", "OPR",     "Rentals"),
-        ("FUEL", "OPR",     "Fuel"),
-        ("CONST","OPR",     "Construction"),
-        ("OVH",  "ROOT",    "Overheads"),
-        ("SAL",  "OVH",     "Salaries"),
-        ("MKT",  "OVH",     "Marketing"),
-    ]
-    leaf_codes = {"RENT","FUEL","CONST","SAL","MKT"}
+    versions = [f"V{i}" for i in range(1, 11)]  # V1..V10
+    months = pd.date_range("2024-01-01", "2025-12-01", freq="MS")
+    items = ["Rentals", "Fuel", "Construction", "Salaries", "Marketing", "Equipment"]
 
     rows = []
     for budget in budgets:
         for version in versions:
-            for code, parent, item in nodes:
+            for item in items:
                 for m in months:
-                    if code in leaf_codes:
-                        base = 8000 + (abs(hash(f"{budget}-{item}")) % 6000)
-                        v_adj = (int(version[1:]) - 3) * 350
-                        season = (m.month % 6) * 200
-                        planned = max(1000, base + v_adj + season)
-                        jitter = ((abs(hash(f"{budget}-{version}-{item}-{m}")) % 21) - 10) / 100.0  # -10%..+10%
-                        actual = int(planned * (1 + jitter))
-                    else:
-                        planned = 0
-                        actual = 0
+                    # deterministic pseudo-random numbers by hashing keys
+                    base = 8000 + (abs(hash(f"{budget}-{item}")) % 6000)
+                    v_adj = (int(version[1:]) - 5) * 250  # version shift
+                    season = (m.month % 6) * 150  # seasonality
+                    planned = max(1000, base + v_adj + season)
+                    jitter = ((abs(hash(f"{budget}-{version}-{item}-{m}")) % 21) - 10) / 100.0  # -10%..+10%
+                    actual = int(planned * (1 + jitter))
                     rows.append({
                         "Budget": budget,
                         "Version": version,
                         "Item": item,
-                        "Code": code,
-                        "ParentCode": parent,
                         "Month": m,
                         "Planned": int(planned),
                         "Actual": int(actual)
@@ -66,156 +37,35 @@ def generate_sample_data():
     df = pd.DataFrame(rows)
     return df
 
-def load_uploaded(planned_df: pd.DataFrame | None, actuals_df: pd.DataFrame | None):
-    """
-    Accepts CSVs in long format:
-      Budget, Version, Item, Code, ParentCode, Month(YYYY-MM or date), Planned [, Actual]
-    If actuals_df provided: same keys + Actual. If not, Actual copied from Planned.
-    """
-    if planned_df is None or planned_df.empty:
-        return None
-    df = planned_df.copy()
-    # Parse dates
-    df["Month"] = pd.to_datetime(df["Month"])
-    # Ensure required cols
-    for col in ["Budget","Version","Item","Month"]:
-        if col not in df.columns:
-            raise ValueError(f"Missing column in Planned CSV: {col}")
-    if "Planned" not in df.columns:
-        df["Planned"] = 0.0
+df = generate_sample_data()
 
-    # Actuals
-    if actuals_df is not None and not actuals_df.empty:
-        a = actuals_df.copy()
-        a["Month"] = pd.to_datetime(a["Month"])
-        key = ["Budget","Version","Item","Code","ParentCode","Month"]
-        for c in ["Code","ParentCode"]:
-            if c not in a.columns: a[c] = ""
-            if c not in df.columns: df[c] = ""
-        merged = pd.merge(
-            df, a[key + ["Actual"]], on=key, how="left", validate="m:m"
-        )
-        merged["Actual"] = merged["Actual"].fillna(merged["Planned"])
-        df = merged
-    else:
-        if "Actual" not in df.columns:
-            df["Actual"] = df["Planned"]
-
-    # Normalize hierarchy cols
-    for c in ["Code","ParentCode"]:
-        if c not in df.columns: df[c] = ""
-        df[c] = df[c].fillna("").astype(str)
-
-    return df
-
-def compute_hierarchy_rollup(filtered: pd.DataFrame) -> pd.DataFrame:
-    """
-    Roll up Planned/Actual along Code/ParentCode and return indented table.
-    """
-    if not {"Code","ParentCode"}.issubset(filtered.columns):
-        return None
-
-    nodes = filtered[["Item","Code","ParentCode"]].drop_duplicates().copy()
-    sums = filtered.groupby(["Code"])[["Planned","Actual"]].sum().reset_index()
-
-    kids = defaultdict(list); indeg = defaultdict(int)
-    codes = set(nodes["Code"].astype(str))
-    parent_map = dict(zip(nodes["Code"].astype(str), nodes["ParentCode"].fillna("").astype(str)))
-    name_map = dict(zip(nodes["Code"].astype(str), nodes["Item"]))
-
-    for _, r in nodes.iterrows():
-        c = str(r["Code"]); p = str(r["ParentCode"]) if pd.notna(r["ParentCode"]) else ""
-        if p and p in codes:
-            kids[p].append(c); indeg[c] += 1
-        else:
-            indeg[c] += 0
-
-    q = deque([c for c in codes if indeg[c] == 0])
-    order = []
-    while q:
-        u = q.popleft(); order.append(u)
-        for v in kids.get(u, []):
-            indeg[v] -= 1
-            if indeg[v] == 0: q.append(v)
-
-    agg = {c: {"Planned":0.0,"Actual":0.0} for c in codes}
-    own = dict(zip(sums["Code"].astype(str), sums[["Planned","Actual"]].values))
-    for c in codes:
-        if c in own:
-            agg[c]["Planned"] = float(own[c][0])
-            agg[c]["Actual"]  = float(own[c][1])
-
-    for u in reversed(order):
-        for v in kids.get(u, []):
-            agg[u]["Planned"] += agg[v]["Planned"]
-            agg[u]["Actual"]  += agg[v]["Actual"]
-
-    # levels (for indentation)
-    level = {c:0 for c in codes}
-    def get_level(x):
-        if level.get(x, None) not in (None, 0): return level[x]
-        seen=set(); cur=x; d=0
-        while True:
-            p = parent_map.get(cur, "")
-            if not p or p not in codes or p in seen: break
-            d += 1; seen.add(p); cur = p
-        level[x]=d; return d
-
-    rows=[]
-    for c in order:
-        nm = name_map.get(c, c)
-        d  = get_level(c)
-        plan = agg[c]["Planned"]; act = agg[c]["Actual"]; var = act - plan
-        rows.append({
-            "Item": (" "*d) + ("• " if d>0 else "") + nm,
-            "Code": c,
-            "Planned": round(plan,2),
-            "Actual": round(act,2),
-            "Variance": round(var,2),
-            "Variance %": (round((var/plan)*100,2) if plan else None)
-        })
-    return pd.DataFrame(rows)
-
-def format_month(dt):
-    return pd.to_datetime(dt).strftime("%Y-%m")
-
-# ---------------- Data source ----------------
-with st.expander("📥 Optional: upload your CSVs (exported from Create page)", expanded=False):
-    st.markdown("- **Planned CSV** must include: Budget, Version, Item, Month, Planned. (Optional: Code, ParentCode)")
-    up_plan = st.file_uploader("Planned CSV", type=["csv"], key="up_plan")
-    up_act  = st.file_uploader("Actuals CSV (optional)", type=["csv"], key="up_act")
-
-df = None
-if up_plan is not None:
-    plan_df = pd.read_csv(up_plan)
-    act_df = pd.read_csv(up_act) if up_act is not None else None
-    df = load_uploaded(plan_df, act_df)
-else:
-    df = generate_sample_data()
-
-# ---------------- Sidebar Filters ----------------
+# ---------- Sidebar Filters ----------
 st.sidebar.header("Filters")
 
+# 1) Choose Budget
 budget_options = sorted(df["Budget"].unique())
 selected_budget = st.sidebar.selectbox("🏷️ Budget", budget_options, index=0)
 
-vers_for_budget = sorted(
-    df.loc[df["Budget"] == selected_budget, "Version"].unique(),
-    key=lambda v: int(v[1:]) if isinstance(v, str) and v[1:].isdigit() else 0,
-    reverse=True
-)
+# 2) Choose Version (filtered by Budget)
+vers_for_budget = sorted(df.loc[df["Budget"] == selected_budget, "Version"].unique(),
+                         key=lambda v: int(v[1:]), reverse=True)
 selected_version = st.sidebar.selectbox("📄 Version", vers_for_budget, index=0)
 
-df_bv = df[(df["Budget"] == selected_budget) & (df["Version"] == selected_version)].copy()
+# 3) Date Range (bounded by available data)
+df_bv = df[(df["Budget"] == selected_budget) & (df["Version"] == selected_version)]
 min_month, max_month = df_bv["Month"].min().date(), df_bv["Month"].max().date()
 col_from, col_to = st.sidebar.columns(2)
 from_date = col_from.date_input("📅 From", min_month, min_value=min_month, max_value=max_month)
-to_date   = col_to.date_input("📅 To", max_month, min_value=min_month, max_value=max_month)
+to_date = col_to.date_input("📅 To", max_month, min_value=min_month, max_value=max_month)
 
+# 4) Items filter
 all_items = sorted(df_bv["Item"].unique())
 selected_items = st.sidebar.multiselect("🧩 Items (categories)", all_items, default=all_items)
+
+# 5) Metric to chart
 metric_choice = st.sidebar.radio("📈 Chart metric", ["Planned", "Actual"], index=0)
 
+# ---------- Apply Filters ----------
 filtered = df_bv[
     (df_bv["Month"] >= pd.to_datetime(from_date)) &
     (df_bv["Month"] <= pd.to_datetime(to_date)) &
@@ -224,14 +74,15 @@ filtered = df_bv[
 
 st.subheader(f"📁 {selected_budget} • {selected_version}  ({from_date} → {to_date})")
 
-# ---------------- Tabs ----------------
-tab1, tab2, tab3, tab4 = st.tabs(["By Item over Time", "Totals over Time", "Table & KPIs", "Hierarchy (Roll-up)"])
+# ---------- Charts ----------
+tab1, tab2, tab3 = st.tabs(["By Item over Time", "Totals over Time", "Table & KPIs"])
 
 with tab1:
     st.markdown("#### Items vs Month")
     if filtered.empty:
         st.info("No data for the selected filters.")
     else:
+        # pivot: rows = Month, columns = Item, values = metric
         pivot_items = filtered.pivot_table(index="Month", columns="Item", values=metric_choice, aggfunc="sum")
         st.line_chart(pivot_items)
 
@@ -261,10 +112,10 @@ with tab3:
                 "Actual": "{:,.0f}",
                 "Variance": "{:,.0f}",
                 "Variance %": "{:.2f}%"
-            }),
-            use_container_width=True
+            })
         )
 
+        # KPIs
         total_planned = int(summary["Planned"].sum())
         total_actual = int(summary["Actual"].sum())
         variance_total = total_actual - total_planned
@@ -277,8 +128,9 @@ with tab3:
         c3.metric("Variance %", f"{variance_pct:.2f}%")
         c4.metric("Items Count", f"{len(selected_items)}")
 
-    # --- Monthly stacked table with merged item label + Variance % ---
+    # --- REPLACED: Monthly breakdown by item (stacked rows with merged item + Variance %) ---
     st.markdown("#### Monthly Breakdown by Item (stacked rows, merged item label + Variance %)")
+
     if filtered.empty:
         st.info("No data for the selected filters.")
     else:
@@ -287,11 +139,13 @@ with tab3:
             "Show rows for:",
             metric_options,
             default=metric_options,
-            help="Uncheck to hide any metric",
+            help="Uncheck to hide any of Planned / Actual / Variance / Variance %",
         )
+
         if not metrics_selected:
             st.warning("Select at least one metric to display.")
         else:
+            # Build monthly sums and compute Variance + Variance %
             monthly = (
                 filtered.groupby(["Item", "Month"])[["Planned", "Actual"]]
                 .sum()
@@ -299,9 +153,12 @@ with tab3:
                 .sort_values(["Item", "Month"])
             )
             monthly["Variance"] = monthly["Actual"] - monthly["Planned"]
+            # Variance % = (Actual - Planned) / Planned * 100, safe for zero planned
             monthly["Variance %"] = (monthly["Variance"] / monthly["Planned"]).where(monthly["Planned"] != 0).mul(100)
 
+            # Keep user-selected order for stacked metrics
             cat = pd.api.types.CategoricalDtype(categories=metrics_selected, ordered=True)
+
             long = monthly.melt(
                 id_vars=["Item", "Month"],
                 value_vars=metrics_selected,
@@ -310,6 +167,7 @@ with tab3:
             )
             long["Metric"] = long["Metric"].astype(cat)
 
+            # Wide for display: rows = (Item, Metric), columns = months
             table = (
                 long.pivot_table(
                     index=["Item", "Metric"],
@@ -319,30 +177,40 @@ with tab3:
                 )
                 .sort_index()
             )
-            if table.shape[1] > 0:
-                table.columns = [format_month(c) for c in table.columns]
 
+            # Pretty month headers
+            if table.shape[1] > 0:
+                table.columns = [c.strftime("%Y-%m") for c in table.columns]
+
+            # Reset index so we can "merge" the item label by blanking consecutive repeats
             table_disp = table.reset_index()
+
+            # Show the item only on the first metric row of each item group
             is_first_of_group = table_disp["Item"].ne(table_disp["Item"].shift())
             table_disp["Item"] = table_disp["Item"].where(is_first_of_group, "")
 
+            # Format numbers: percent for "Variance %", thousands for others
             month_cols = [c for c in table_disp.columns if c not in ["Item", "Metric"]]
+            # Create a display copy with strings for pretty formatting
             table_show = table_disp.copy()
             for col in month_cols:
+                # Percent rows
                 mask_pct = table_show["Metric"] == "Variance %"
                 table_show.loc[mask_pct, col] = table_show.loc[mask_pct, col].apply(
                     lambda v: "-" if pd.isna(v) else f"{float(v):.2f}%"
                 )
+                # Numeric rows
                 mask_num = ~mask_pct
                 table_show.loc[mask_num, col] = table_show.loc[mask_num, col].apply(
                     lambda v: "-" if pd.isna(v) else f"{int(round(float(v))):,}"
                 )
 
+            # Styling: color text by metric on the month columns
             color_map = {
-                "Planned": "#1f77b4",
-                "Actual": "#2ca02c",
-                "Variance": "#d62728",
-                "Variance %": "#9467bd",
+                "Planned": "#1f77b4",    # blue
+                "Actual": "#2ca02c",     # green
+                "Variance": "#d62728",   # red
+                "Variance %": "#9467bd", # purple
             }
             ncols = table_show.shape[1]
 
@@ -368,8 +236,10 @@ with tab3:
                 .apply(color_by_metric_row, axis=1)
                 .apply(bold_first_item_row, axis=1)
             )
+
             st.dataframe(styled, use_container_width=True)
 
+            # Download (long format) for Excel/Sheets — Variance % as numeric percent
             csv = long.sort_values(["Item", "Metric", "Month"]).to_csv(index=False).encode("utf-8")
             st.download_button(
                 "⬇️ Download monthly stacked breakdown (CSV)",
@@ -378,19 +248,12 @@ with tab3:
                 mime="text/csv",
             )
 
-with tab4:
-    st.markdown("#### Tree totals (auto-summed from children)")
-    if filtered.empty:
-        st.info("No data for the selected filters.")
-    else:
-        out = compute_hierarchy_rollup(filtered)
-        if out is None:
-            st.info("No hierarchy columns found (Code/ParentCode). Upload/create data with hierarchy to use this tab.")
-        else:
-            show_leaves_only = st.checkbox("Show leaves only", value=False, key="leaf_only")
-            if show_leaves_only and {"Code","ParentCode"}.issubset(filtered.columns):
-                leaf_codes = set(
-                    filtered.loc[~filtered["Code"].isin(filtered["ParentCode"].replace("", pd.NA).dropna()), "Code"]
-                )
-                out = out[out["Code"].isin(leaf_codes)]
-            st.dataframe(out.drop(columns=["Code"]), use_container_width=True)
+            st.caption("Colors — Planned: blue, Actual: green, Variance: red, Variance %: purple. Note: tables don’t support true row-spans; item label is shown on the first metric row only.")
+
+
+# ---------- Notes ----------
+st.caption("Tip: Use the Items filter to focus on specific categories. Switch the chart metric to compare Planned vs Actual per item.")
+
+
+
+
