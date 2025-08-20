@@ -299,9 +299,9 @@ if "Asset" in extra_cols:
     gb.configure_column("Asset", editable=True, header_name="Asset (AS-1;AS-2)", width=220)
 
 # Month columns: numeric, sum at parents, editable only on leaves
-editable_leaf_js = JsCode("function(params){ return !!(params.data && params.data.isLeaf===true); }")
+editable_leaf_js = JsCode("function(params){ return !!(params.data && params.data.isLeaf===True); }")
 disable_parent_style = JsCode(
-    "function(params){ if(params.data && params.data.isLeaf===true){return {'fontWeight':'600'};} "
+    "function(params){ if(params.data && params.data.isLeaf===True){return {'fontWeight':'600'};} "
     "else {return {'color':'#666','backgroundColor':'#f7f7f7'};} }"
 )
 for m in month_labels:
