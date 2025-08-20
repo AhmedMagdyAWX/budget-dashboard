@@ -32,7 +32,6 @@ def parse_multi(cell):
 def make_empty_grid(items, months, extra_cols, multi_cols):
     cols = ["Code", "ParentCode", "Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
     df = pd.DataFrame(columns=cols)
-    # starter rows
     if items:
         df["Item"] = items
     df["Code"] = ""
@@ -53,11 +52,9 @@ def normalize_dimension_columns(df, extra_cols, multi_cols):
     if df is None:
         return None
     df = df.copy()
-    # hierarchy cols must exist
     for c in ["Code", "ParentCode", "Item"]:
         if c not in df.columns:
             df[c] = "" if c != "Item" else df.get("Item", "")
-    # dimension cols
     for c in extra_cols:
         if c in multi_cols:
             if c in df.columns:
@@ -69,7 +66,6 @@ def normalize_dimension_columns(df, extra_cols, multi_cols):
                 df[c] = df[c].apply(lambda v: "" if pd.isna(v) else str(v).strip())
             else:
                 df[c] = ""
-    # codes as strings
     for c in ["Code", "ParentCode"]:
         df[c] = df[c].fillna("").astype(str)
     return df
@@ -243,7 +239,6 @@ for c in extra_cols:
 for m in month_labels:
     if m not in grid_df.columns:
         grid_df[m] = 0
-# normalize types after patch
 grid_df = normalize_dimension_columns(grid_df, extra_cols, multi_cols)
 
 # ---------------- Build inline editors with graceful fallback ----------------
@@ -251,10 +246,9 @@ has_multi  = hasattr(st.column_config, "MultiSelectColumn")
 has_select = hasattr(st.column_config, "SelectboxColumn")
 
 cfg = {}
+
 # Hierarchy editors
 cfg["Code"] = st.column_config.TextColumn("Code", help="Unique ID for this line (e.g., RENT, FUEL01).")
-
-# Parent options based on current codes (may be blank initially)
 existing_codes = sorted([c for c in grid_df["Code"].astype(str).unique() if c])
 parent_options = [""] + existing_codes
 if has_select:
@@ -269,30 +263,66 @@ cfg["Item"] = st.column_config.TextColumn("Item", help="Budget line item / categ
 for m in month_labels:
     cfg[m] = st.column_config.NumberColumn(m, min_value=0.0, step=1.0, help="Planned amount")
 
-# Dimension editors
-if "Entity" in extra_cols:
-    if has_multi:
+# ----- Branch: modern (lists allowed) vs legacy (strings only) -----
+if has_multi:
+    # Dimension editors (native)
+    if "Entity" in extra_cols:
         cfg["Entity"] = st.column_config.MultiSelectColumn("Entity", options=entity_options, help="Select one or more Entities")
-    else:
-        cfg["Entity"] = st.column_config.TextColumn("Entity", help="Enter semicolon/comma-separated list")
-if "CostCenter" in extra_cols:
-    if has_select:
-        cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
-    else:
-        cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a value")
-if "Asset" in extra_cols:
-    if has_multi:
+    if "CostCenter" in extra_cols:
+        if has_select:
+            cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
+        else:
+            cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a value")
+    if "Asset" in extra_cols:
         cfg["Asset"] = st.column_config.MultiSelectColumn("Asset", options=asset_options, help="Select one or more Assets")
-    else:
-        cfg["Asset"] = st.column_config.TextColumn("Asset", help="Enter semicolon/comma-separated list")
 
-edited = st.data_editor(
-    grid_df,
-    num_rows="dynamic",
-    column_config=cfg,
-    use_container_width=True,
-    key="grid_editor",
-)
+    # Pass the real grid (multi dims are lists)
+    edited = st.data_editor(
+        grid_df,
+        num_rows="dynamic",
+        column_config=cfg,
+        use_container_width=True,
+        key="grid_editor",
+    )
+
+else:
+    # LEGACY: Text columns only — convert multi dims to strings "A;B"
+    display_df = grid_df.copy()
+    for c in extra_cols:
+        if c in multi_cols and c in display_df.columns:
+            display_df[c] = display_df[c].apply(lambda lst: ";".join(parse_multi(lst)))
+        elif c in display_df.columns:
+            display_df[c] = display_df[c].astype(str)
+
+    # Dimension editors as Text / Selectbox
+    if "Entity" in extra_cols:
+        cfg["Entity"] = st.column_config.TextColumn("Entity", help="Enter values from catalog, e.g. E001;E002")
+    if "CostCenter" in extra_cols:
+        if has_select:
+            cfg["CostCenter"] = st.column_config.SelectboxColumn("CostCenter", options=[""] + costcenter_options, help="Single selection")
+        else:
+            cfg["CostCenter"] = st.column_config.TextColumn("CostCenter", help="Type a value")
+    if "Asset" in extra_cols:
+        cfg["Asset"] = st.column_config.TextColumn("Asset", help="Enter values from catalog, e.g. AS-TRUCK-01;AS-GEN-02")
+
+    edited_display = st.data_editor(
+        display_df,
+        num_rows="dynamic",
+        column_config=cfg,
+        use_container_width=True,
+        key="grid_editor",
+    )
+
+    # Convert back to real types (parse multi)
+    edited = grid_df.copy()
+    # simple fields
+    for col in ["Code", "ParentCode", "Item"] + month_labels + (["CostCenter"] if "CostCenter" in extra_cols else []):
+        if col in edited_display.columns:
+            edited[col] = edited_display[col]
+    # multi dims back to lists
+    for c in extra_cols:
+        if c in multi_cols and c in edited_display.columns:
+            edited[c] = edited_display[c].apply(parse_multi)
 
 # Normalize types after edit
 edited = normalize_dimension_columns(edited, extra_cols, multi_cols)
@@ -318,7 +348,26 @@ for _, r in df_lines.iterrows():
     c = str(r.get("Code", "")).strip()
     if c:
         pairs.append((p, c))
-cycle_flag = detect_cycles(pairs)
+def _detect_cycles_local(pairs):
+    graph = defaultdict(list)
+    indeg = defaultdict(int)
+    nodes = set()
+    for p, c in pairs:
+        if p and c:
+            graph[p].append(c); indeg[c] += 1
+            nodes.add(p); nodes.add(c)
+        elif c:
+            nodes.add(c)
+    dq = deque([n for n in nodes if indeg[n] == 0])
+    count = 0
+    while dq:
+        u = dq.popleft(); count += 1
+        for v in graph.get(u, []):
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                dq.append(v)
+    return count != len(nodes)
+cycle_flag = _detect_cycles_local(pairs)
 
 # parent/leaf flags
 is_parent = df_lines["Code"].astype(str).str.strip().isin(
@@ -427,6 +476,6 @@ else:
     )
 
 st.caption(
-    "Upgrade-safe: Code/ParentCode ensured. Parent rows are zeroed (leaf-only input). "
-    "Dimensions on leaves only; duplicates across leaf rows are blocked."
+    "Upgrade-safe fallback in place. On older Streamlit, multi dimensions are entered as 'A;B;C' inline; on newer, true multi-selects appear. "
+    "Parents are zeroed (leaf-only input). Duplicates across leaf rows are blocked."
 )
