@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from collections import defaultdict, deque
+import json as _json
 
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode, GridUpdateMode, DataReturnMode
 
@@ -28,7 +29,7 @@ def parse_multi(cell):
         return []
     return [p.strip() for p in s.replace(";", ",").split(",") if p.strip()]
 
-def make_empty_grid(items, months, extra_cols, multi_cols):
+def make_empty_grid(items, months, extra_cols):
     cols = ["Code", "ParentCode", "Item"] + extra_cols + [m.strftime("%Y-%m") for m in months]
     df = pd.DataFrame(columns=cols)
     if items:
@@ -38,11 +39,12 @@ def make_empty_grid(items, months, extra_cols, multi_cols):
     for m in [m.strftime("%Y-%m") for m in months]:
         df[m] = 0
     for c in extra_cols:
-        df[c] = ""  # we’ll edit as strings in-grid; parse on export
+        df[c] = ""  # edit as strings in-grid; parse on export
     return df
 
 def normalize_types(df, extra_cols):
     df = df.copy()
+    # Ensure presence and string type
     for c in ["Code", "ParentCode", "Item"]:
         if c not in df.columns:
             df[c] = "" if c != "Item" else df.get("Item", "")
@@ -51,10 +53,19 @@ def normalize_types(df, extra_cols):
         if c not in df.columns:
             df[c] = ""
         df[c] = df[c].fillna("").astype(str)
+    # Ensure month cols exist and are numeric
+    for c in df.columns:
+        if len(c) == 7 and c[:4].isdigit() and c[4] == "-":
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     return df
 
 def build_tree_path(df):
-    """Return path list for each row based on Code/ParentCode; detect cycles."""
+    """
+    Returns:
+      paths: list[list[str]] path from root to node (by display names)
+      is_leaf: list[bool]
+      has_cycle: bool
+    """
     codes = df["Code"].astype(str).tolist()
     parents = df["ParentCode"].astype(str).tolist()
     items = df["Item"].astype(str).tolist()
@@ -62,25 +73,29 @@ def build_tree_path(df):
     parent_of = {c: p for c, p in zip(codes, parents) if c}
     name_of = {c: it for c, it in zip(codes, items) if c}
 
-    # detect cycles
+    # Detect cycles (Kahn)
     pairs = [(parent_of.get(c, ""), c) for c in codes if c]
-    graph = defaultdict(list); indeg = defaultdict(int); nodes = set()
+    graph = defaultdict(list)
+    indeg = defaultdict(int)
+    nodes = set()
     for p, c in pairs:
         if c:
             nodes.add(c)
         if p:
-            graph[p].append(c); indeg[c] += 1; nodes.add(p)
+            graph[p].append(c)
+            indeg[c] += 1
+            nodes.add(p)
     dq = deque([n for n in nodes if indeg[n] == 0])
     seen = 0
     while dq:
-        u = dq.popleft(); seen += 1
+        u = dq.popleft()
+        seen += 1
         for v in graph.get(u, []):
             indeg[v] -= 1
             if indeg[v] == 0:
                 dq.append(v)
     has_cycle = (seen != len(nodes)) and len(nodes) > 0
 
-    # path builder with guard
     def path_for(code, fallback_name):
         if not code:
             return [fallback_name or "(unnamed)"]
@@ -101,13 +116,12 @@ def build_tree_path(df):
 
     paths = []
     is_parent_set = set(parent_of.values()) - {""}
-    for idx, row in df.iterrows():
+    for _, row in df.iterrows():
         code = str(row["Code"])
         nm = str(row["Item"])
         paths.append(path_for(code, nm))
 
     is_leaf = [str(row["Code"]) not in is_parent_set for _, row in df.iterrows()]
-
     return paths, is_leaf, has_cycle
 
 def to_long_format(df, months_cols, meta, extra_cols):
@@ -134,8 +148,7 @@ def to_long_format(df, months_cols, meta, extra_cols):
             for c in extra_cols:
                 entry[c] = ";".join(parse_multi(r.get(c, "")))
             rows.append(entry)
-    out = pd.DataFrame(rows).sort_values(["Code", "Item", "Month"]).reset_index(drop=True)
-    return out
+    return pd.DataFrame(rows).sort_values(["Code", "Item", "Month"]).reset_index(drop=True)
 
 def find_duplicate_dims_leaf_only(df_leaf, extra_cols):
     issues = {}
@@ -176,6 +189,7 @@ extra_cols = st.sidebar.multiselect(
     ["Entity", "CostCenter", "Asset"],
     default=["Entity", "CostCenter", "Asset"]
 )
+
 with st.sidebar.expander("📚 Dimension catalogs"):
     def _parse_catalog(label, defaults):
         return st.text_area(label, value="\n".join(defaults), height=100).splitlines()
@@ -197,12 +211,8 @@ with st.expander("📥 Upload CSV/Excel (long or wide acceptable)", expanded=Fal
     up = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     uploaded_df = None
     if up is not None:
-        if up.name.lower().endswith(".csv"):
-            uploaded_df = pd.read_csv(up)
-        else:
-            uploaded_df = pd.read_excel(up)
-
-        # Try long -> wide
+        uploaded_df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
+        # Long -> wide
         if "Month" in uploaded_df.columns and "Planned" in uploaded_df.columns:
             tmp = uploaded_df.copy()
             tmp["Month"] = pd.to_datetime(tmp["Month"]).dt.strftime("%Y-%m")
@@ -214,13 +224,12 @@ with st.expander("📥 Upload CSV/Excel (long or wide acceptable)", expanded=Fal
                 if c not in tmp.columns:
                     tmp[c] = ""
             wide = tmp.pivot_table(index=need + extra_cols, columns="Month", values="Planned", aggfunc="sum").reset_index()
-            # ensure selected month columns exist
             for m in month_labels:
                 if m not in wide.columns:
                     wide[m] = 0
             uploaded_df = wide[need + extra_cols + month_labels]
         else:
-            # assume wide; ensure required cols
+            # Assume wide; ensure required columns
             for c in ["Code", "ParentCode", "Item"]:
                 if c not in uploaded_df.columns:
                     uploaded_df[c] = "" if c != "Item" else uploaded_df.get("Item", "")
@@ -239,7 +248,7 @@ if (
     or st.session_state.get("grid_months") != month_labels
     or st.session_state.get("grid_extras") != tuple(extra_cols)
 ):
-    st.session_state["grid_df"] = make_empty_grid(default_items, months, extra_cols, {"Entity", "Asset"})
+    st.session_state["grid_df"] = make_empty_grid(default_items, months, extra_cols)
     st.session_state["grid_months"] = month_labels
     st.session_state["grid_extras"] = tuple(extra_cols)
 
@@ -250,10 +259,11 @@ grid_df = normalize_types(st.session_state["grid_df"], extra_cols)
 
 # ---------------- Build tree path & flags ----------------
 paths, is_leaf, has_cycle = build_tree_path(grid_df)
-grid_df["_path"] = paths
+# Store path as string for hashing; JS will split it
+grid_df["_path"] = ["||".join(p) for p in paths]
 grid_df["isLeaf"] = is_leaf
 
-# Zero out parents in the backing frame to keep data leaf-only
+# Zero out parents in the backing frame (leaf-only input)
 month_cols = [c for c in grid_df.columns if len(c) == 7 and c[4] == "-" and c[:4].isdigit()]
 if grid_df["isLeaf"].notna().any():
     grid_df.loc[~grid_df["isLeaf"], month_cols] = 0
@@ -261,13 +271,14 @@ if grid_df["isLeaf"].notna().any():
 # ---------------- Tree Grid (AG Grid) ----------------
 st.subheader("2) Edit Tree")
 
-# Column builder
-gb = GridOptionsBuilder.from_dataframe(grid_df[["_path", "Code", "ParentCode", "Item"] + extra_cols + month_labels])
+# Build grid display DF (hide helper)
+display_cols = ["_path", "Code", "ParentCode", "Item"] + extra_cols + month_labels
+gb = GridOptionsBuilder.from_dataframe(grid_df[display_cols])
 gb.configure_grid_options(
     treeData=True,
     animateRows=True,
     groupDisplayType="tree",
-    getDataPath=JsCode("function(data){return data._path;}"),
+    getDataPath=JsCode("function(data){ return data._path.split('||'); }"),
     autoGroupColumnDef={
         "headerName": "Item",
         "minWidth": 260,
@@ -277,17 +288,15 @@ gb.configure_grid_options(
     groupDefaultExpanded=0,
 )
 
-# Hide helper/path
 gb.configure_column("_path", header_name="Path", hide=True)
-# Code / ParentCode editable (ParentCode as free text; you can use a select via values)
 gb.configure_column("Code", editable=True, width=140)
 gb.configure_column("ParentCode", editable=True, width=160)
+gb.configure_column("Item", editable=True, width=220)
 
-# Dimensions (simple editors). Tip shown to use semicolons for multi.
+# Dimensions
 if "Entity" in extra_cols:
     gb.configure_column("Entity", editable=True, header_name="Entity (E001;E002)", width=220)
 if "CostCenter" in extra_cols:
-    # single-select via rich editor
     gb.configure_column(
         "CostCenter",
         editable=True,
@@ -298,10 +307,10 @@ if "CostCenter" in extra_cols:
 if "Asset" in extra_cols:
     gb.configure_column("Asset", editable=True, header_name="Asset (AS-1;AS-2)", width=220)
 
-# Month columns: numeric, sum at parents, editable only on leaves
-editable_leaf_js = JsCode("function(params){ return !!(params.data && params.data.isLeaf===True); }")
+# Month columns: numeric, sum on parents, editable only on leaves
+editable_leaf_js = JsCode("function(params){ return !!(params.data && params.data.isLeaf===true); }")
 disable_parent_style = JsCode(
-    "function(params){ if(params.data && params.data.isLeaf===True){return {'fontWeight':'600'};} "
+    "function(params){ if(params.data && params.data.isLeaf===true){return {'fontWeight':'600'};} "
     "else {return {'color':'#666','backgroundColor':'#f7f7f7'};} }"
 )
 for m in month_labels:
@@ -315,9 +324,8 @@ for m in month_labels:
         width=120
     )
 
-gb.configure_side_bar()  # optional: show columns/filter panels
+gb.configure_side_bar()
 gb.configure_selection("multiple", use_checkbox=True)
-
 go = gb.build()
 
 grid_resp = AgGrid(
@@ -326,16 +334,16 @@ grid_resp = AgGrid(
     data_return_mode=DataReturnMode.AS_INPUT,
     update_mode=GridUpdateMode.MODEL_CHANGED | GridUpdateMode.SELECTION_CHANGED,
     fit_columns_on_grid_load=True,
-    allow_unsafe_jscode=True,  # we intentionally pass JS callbacks
+    allow_unsafe_jscode=True,
     height=560,
 )
 
 edited_df = pd.DataFrame(grid_resp.data) if grid_resp.data is not None else grid_df.copy()
 edited_df = normalize_types(edited_df, extra_cols)
 
-# Recompute tree after edits (code/parent may have changed)
+# Recompute tree after edits
 paths, is_leaf, has_cycle = build_tree_path(edited_df)
-edited_df["_path"] = paths
+edited_df["_path"] = ["||".join(p) for p in paths]
 edited_df["isLeaf"] = is_leaf
 edited_df.loc[~edited_df["isLeaf"], month_cols] = 0
 
@@ -353,9 +361,8 @@ if c_add.button("➕ Add Row"):
     st.session_state["grid_df"] = grid_df
     st.rerun()
 
-sel = pd.DataFrame(grid_resp["selected_rows"]) if "selected_rows" in grid_resp and grid_resp["selected_rows"] else pd.DataFrame()
+sel = pd.DataFrame(grid_resp.get("selected_rows", []))
 if c_del.button("🗑️ Delete Selected") and not sel.empty:
-    # Drop by index match on Code+Item+ParentCode to be safe
     key_cols = ["Code", "ParentCode", "Item"]
     merged = grid_df.merge(sel[key_cols].drop_duplicates(), on=key_cols, how="left", indicator=True)
     grid_df = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
@@ -384,10 +391,12 @@ if has_cycle:
 
 # Dimension duplicates on leaves only
 leaf_df = grid_df[grid_df["isLeaf"]].copy() if "isLeaf" in grid_df.columns else grid_df.copy()
-dup_dims = find_duplicate_dims_leaf_only(leaf_df[["Entity","CostCenter","Asset"]].reindex(columns=extra_cols, fill_value=""), extra_cols)
-for dim, vals in dup_dims.items():
-    for v, rows in vals:
-        err_msgs.append(f"Duplicate {dim} value '{v}' across leaf rows {rows}")
+dims_present = [c for c in ["Entity", "CostCenter", "Asset"] if c in extra_cols]
+if dims_present and not leaf_df.empty:
+    dup_dims = find_duplicate_dims_leaf_only(leaf_df[dims_present], dims_present)
+    for dim, vals in dup_dims.items():
+        for v, rows in vals:
+            err_msgs.append(f"Duplicate {dim} value '{v}' across leaf rows {rows}")
 
 if err_msgs:
     st.error("🚫 Please fix before export:\n- " + "\n- ".join(err_msgs))
@@ -396,10 +405,10 @@ else:
 
 # ---------------- Preview totals ----------------
 with st.expander("👀 Preview (leaf rows only)", expanded=False):
-    leaf_numeric = leaf_df[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0) if not leaf_df.empty else pd.DataFrame()
     if not leaf_df.empty:
+        leaf_numeric = leaf_df[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
         leaf_df["Row Total Planned"] = leaf_numeric.sum(axis=1)
-        st.dataframe(leaf_df[["Code","ParentCode","Item"] + extra_cols + ["Row Total Planned"]], use_container_width=True)
+        st.dataframe(leaf_df[["Code", "ParentCode", "Item"] + dims_present + ["Row Total Planned"]], use_container_width=True)
         col_totals = leaf_numeric.sum(axis=0)
         st.write("Per-Month Totals:")
         st.dataframe(col_totals.to_frame(name="Planned").T, use_container_width=True)
@@ -421,7 +430,13 @@ meta = {
     "extra_columns": extra_cols,
 }
 
-can_export = (len(err_msgs) == 0) and (len(months) > 0) and (bool(meta["budget_name"]) and (budget_type != "Project" or meta["project_name"]))
+can_export = (
+    len(err_msgs) == 0
+    and len(months) > 0
+    and bool(meta["budget_name"])
+    and (budget_type != "Project" or meta["project_name"])
+)
+
 if not can_export:
     st.warning("Fill required fields and fix errors to enable export.")
 
@@ -439,7 +454,6 @@ if can_export:
         "meta": meta,
         "data": long_df.assign(Month=lambda d: d["Month"].dt.strftime("%Y-%m-%d")).to_dict(orient="records")
     }
-    import json as _json
     c_json.download_button(
         "⬇️ Export Budget as JSON",
         _json.dumps(payload, indent=2).encode("utf-8"),
