@@ -271,7 +271,7 @@ gb.configure_grid_options(
     autoGroupColumnDef={
         "headerName": "Item",
         "minWidth": 260,
-        "cellRendererParams": {"suppressCount": true}
+        "cellRendererParams": {"suppressCount": True}
     },
     rowSelection="multiple",
     groupDefaultExpanded=0,
