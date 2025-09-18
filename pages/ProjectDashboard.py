@@ -1,517 +1,293 @@
+# pages/3_Project_Dashboard.py
+# Single-project dashboard (static data now; swap DATA section with API later)
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import date, timedelta
+import altair as alt
+from datetime import date
 
 st.set_page_config(page_title="Project Dashboard", layout="wide")
-st.title("🧱 Project Dashboard")
 
-# ======================================================================================
-# Helpers
-# ======================================================================================
-@st.cache_data
-def _month_start(d): return pd.to_datetime(d).replace(day=1)
+# ===================== THEME & STYLES =====================
+st.markdown(
+    """
+    <style>
+      /* page padding */
+      .block-container{padding-top:1.5rem;padding-bottom:2rem;}
 
-def _read_any(upload):
-    if upload is None: return None
-    return pd.read_csv(upload) if upload.name.lower().endswith(".csv") else pd.read_excel(upload)
+      /* soft cards */
+      .card{border-radius:18px;border:1px solid rgba(0,0,0,0.08);
+            padding:14px 16px;background:linear-gradient(180deg,rgba(255,255,255,.85),rgba(255,255,255,.95));
+            box-shadow:0 4px 18px rgba(0,0,0,0.06)}
+      .metric{font-size:28px;font-weight:700;margin-top:-6px}
+      .metric-sub{font-size:12px;color:#6b7280;margin-top:-2px}
 
-def _stdcol(df, name):
-    """Return actual column name by case-insensitive match (or None)."""
-    if df is None: return None
-    names = {c.lower(): c for c in df.columns}
-    return names.get(name.lower())
+      /* section titles */
+      h2 span{background: #f3f4f6; padding:6px 12px; border-radius:12px;}
+      /* dataframes: tight row height */
+      .dataframe tbody tr th, .dataframe tbody tr td{padding:6px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def _rename(df, mapping):
-    out = df.copy()
-    for want, have in mapping.items():
-        if have and have in out.columns and want != have:
-            out = out.rename(columns={have: want})
-    return out
+st.title("🏗️ Project Dashboard")
 
-def _safe_num(s): return pd.to_numeric(s, errors="coerce").fillna(0.0)
+# ===================== DATA (STATIC) =====================
+# You can replace this whole block with API responses later.
+PROJECT = "Project Phoenix"
+CURRENCY = "EGP"
 
-# ======================================================================================
-# Sample demo data (runs instantly if you don't upload)
-# ======================================================================================
-@st.cache_data
-def sample_master_projects():
-    rows = [
-        {"Project":"Project A","Client":"Big Client Co","ContractAmount":5_000_000,"SubcontractAmount":1_300_000,
-         "AdditionalWork":350_000,"StartDate":"2025-01-05","EndDate":"2025-12-31","AdvancePayment":600_000,"Currency":"EGP"},
-        {"Project":"Project B","Client":"Infra Ltd","ContractAmount":3_800_000,"SubcontractAmount":900_000,
-         "AdditionalWork":120_000,"StartDate":"2025-02-01","EndDate":"2025-10-31","AdvancePayment":300_000,"Currency":"EGP"},
-    ]
-    df = pd.DataFrame(rows)
-    df["StartDate"] = pd.to_datetime(df["StartDate"]).dt.date
-    df["EndDate"] = pd.to_datetime(df["EndDate"]).dt.date
-    return df
+master = {
+    "Project": PROJECT,
+    "Client": "Al Qimma Developments",
+    "ContractAmount": 5_400_000.0,
+    "SubcontractAmount": 1_250_000.0,
+    "AdditionalWork": 420_000.0,
+    "AdvancePayment": 600_000.0,
+    "StartDate": date(2025, 1, 10),
+    "EndDate": date(2025, 12, 31),
+}
 
-@st.cache_data
-def sample_budgets():
-    # Long format: Project, Version, Month, Type (Revenue/Cost), Item, Planned
-    rng = pd.date_range("2025-01-01","2025-12-01",freq="MS")
-    rows=[]
-    for p in ["Project A","Project B"]:
-        for v in ["V1","V2"]:
-            for m in rng:
-                # planned revenue & cost
-                rev = 380_000 + (abs(hash((p,v,"rev",m.month)))%80_000)
-                cost = 250_000 + (abs(hash((p,v,"cost",m.month)))%60_000)
-                rows.append({"Project":p,"Version":v,"Month":m,"Type":"Revenue","Item":"Revenue","Planned":float(rev)})
-                rows.append({"Project":p,"Version":v,"Month":m,"Type":"Cost","Item":"Cost","Planned":float(cost)})
-    return pd.DataFrame(rows)
+# Months of the year
+months = pd.date_range("2025-01-01", "2025-12-01", freq="MS")
 
-@st.cache_data
-def sample_actuals():
-    # Date, Project, Type (Revenue/Expense), Category, Amount
-    rng = pd.date_range("2025-01-01","2025-12-25",freq="7D")
-    rows=[]
-    cats_rev = ["Progress Bill","Variation"]
-    cats_exp = ["Fuel","Rentals","Salaries","Materials","Subcontractors","Marketing","Misc"]
-    rs = np.random.RandomState(7)
-    for p in ["Project A","Project B"]:
-        for d in rng:
-            if rs.rand()<0.6:
-                rows.append({"Date":d,"Project":p,"Type":"Revenue","Category":rs.choice(cats_rev),"Amount":float(rs.randint(80_000,180_000))})
-            if rs.rand()<0.9:
-                rows.append({"Date":d+pd.Timedelta(days=rs.randint(0,6)),"Project":p,"Type":"Expense","Category":rs.choice(cats_exp),"Amount":-float(rs.randint(30_000,120_000))})
-    df = pd.DataFrame(rows)
-    df["Date"] = pd.to_datetime(df["Date"]).dt.date
-    return df
+# Planned budget (per month)
+rng = np.random.RandomState(20)
+planned_rev = 380_000 + rng.randint(0, 80_000, len(months))
+planned_cost = 250_000 + rng.randint(0, 60_000, len(months))
 
-@st.cache_data
-def sample_client_invoices():
-    rows=[]; rs=np.random.RandomState(11)
-    for p in ["Project A","Project B"]:
-        for i in range(1,10):
-            d = pd.to_datetime(f"2025-{(i%12)+1:02d}-10").date()
-            amt = float(rs.randint(120_000, 280_000))
-            paid = amt if rs.rand()<0.6 else (amt*rs.uniform(0.2,0.8) if rs.rand()<0.5 else 0.0)
-            rows.append({"InvoiceNo":f"{p[:2].upper()}-INV-{i:03d}","Project":p,"Client": "Auto",
-                         "Date":d,"DueDate":(pd.to_datetime(d)+pd.Timedelta(days=30)).date(),
-                         "Amount":amt,"Collected":float(paid)})
-    return pd.DataFrame(rows)
+# Actuals (per month)
+rng2 = np.random.RandomState(33)
+actual_rev = planned_rev * (0.88 + rng2.rand(len(months))*0.25)       # 88% – 113% of plan
+actual_cost = planned_cost * (0.9  + rng2.rand(len(months))*0.3)      # 90% – 120% of plan
 
-@st.cache_data
-def sample_supplier_invoices():
-    rows=[]; rs=np.random.RandomState(13)
-    for p in ["Project A","Project B"]:
-        for i in range(1,12):
-            d = pd.to_datetime(f"2025-{(i%12)+1:02d}-15").date()
-            amt = float(rs.randint(50_000, 160_000))
-            paid = amt if rs.rand()<0.55 else (amt*rs.uniform(0.1,0.7) if rs.rand()<0.5 else 0.0)
-            rows.append({"InvoiceNo":f"{p[:2].upper()}-SUP-{i:03d}","Supplier":f"Supplier {rs.randint(1,6)}","Project":p,
-                         "Date":d,"DueDate":(pd.to_datetime(d)+pd.Timedelta(days=45)).date(),
-                         "Amount":amt,"Paid":float(paid)})
-    return pd.DataFrame(rows)
-
-@st.cache_data
-def sample_client_payments():
-    rows=[]; rs=np.random.RandomState(17)
-    statuses=["collected","under_collection","rejected"]
-    methods=["cash","transfer","cheque"]
-    for p in ["Project A","Project B"]:
-        for i in range(1,12):
-            d = pd.to_datetime(f"2025-{(i%12)+1:02d}-20").date()
-            amt = float(rs.randint(50_000, 180_000))
-            stt = rs.choice(statuses, p=[0.7,0.25,0.05])
-            rows.append({"PaymentNo":f"{p[:2].upper()}-PAY-{i:03d}","Project":p,"Date":d,
-                         "Amount":amt,"Method":rs.choice(methods),"Status":stt,"Reference":"-"})
-    return pd.DataFrame(rows)
-
-@st.cache_data
-def sample_supplier_payments():
-    rows=[]; rs=np.random.RandomState(23)
-    statuses=["paid","cheque_issued","cheque_under_collection"]
-    methods=["transfer","cash","cheque"]
-    for p in ["Project A","Project B"]:
-        for i in range(1,10):
-            d = pd.to_datetime(f"2025-{(i%12)+1:02d}-25").date()
-            amt = float(rs.randint(30_000, 140_000))
-            stt = rs.choice(statuses, p=[0.6,0.25,0.15])
-            rows.append({"PaymentNo":f"{p[:2].upper()}-SPY-{i:03d}","Project":p,"Date":d,
-                         "Amount":amt,"Method":rs.choice(methods),"Status":stt,"Supplier":f"Supplier {rs.randint(1,6)}"})
-    return pd.DataFrame(rows)
-
-@st.cache_data
-def sample_employees():
-    rows=[]
-    for p in ["Project A","Project B"]:
-        for i,role in enumerate(["PM","Engineer","Surveyor","Technician","Driver"], start=1):
-            rows.append({"Employee":f"Emp {i:02d}","Role":role,"Project":p,
-                         "Start":pd.to_datetime("2025-01-10").date(),"End":pd.to_datetime("2025-12-31").date(),
-                         "CostRate": float(15_000 + i*1200), "AllocationPct": float(0.5 if role in ["Technician","Driver"] else 1.0)})
-    return pd.DataFrame(rows)
-
-# ======================================================================================
-# Uploads (each section can be overridden)
-# ======================================================================================
-with st.expander("📥 Optional uploads (CSV/Excel) — override the sample data", expanded=False):
-    col1, col2, col3 = st.columns(3)
-    up_master   = col1.file_uploader("Projects master", type=["csv","xlsx"])
-    up_budget   = col2.file_uploader("Budgets (long format)", type=["csv","xlsx"])
-    up_actuals  = col3.file_uploader("Actuals (Revenue/Expense)", type=["csv","xlsx"])
-    col4, col5, col6 = st.columns(3)
-    up_cinv     = col4.file_uploader("Client invoices", type=["csv","xlsx"])
-    up_sinv     = col5.file_uploader("Supplier invoices", type=["csv","xlsx"])
-    up_emp      = col6.file_uploader("Employees/Assignments", type=["csv","xlsx"])
-    col7, col8 = st.columns(2)
-    up_cpay     = col7.file_uploader("Client payments", type=["csv","xlsx"])
-    up_spay     = col8.file_uploader("Supplier payments", type=["csv","xlsx"])
-
-# Load / normalize
-master = _read_any(up_master) or sample_master_projects()
-# standardize master
-master = _rename(master, {
-    "Project": _stdcol(master,"Project"),
-    "Client": _stdcol(master,"Client"),
-    "ContractAmount": _stdcol(master,"ContractAmount"),
-    "SubcontractAmount": _stdcol(master,"SubcontractAmount"),
-    "AdditionalWork": _stdcol(master,"AdditionalWork"),
-    "StartDate": _stdcol(master,"StartDate"),
-    "EndDate": _stdcol(master,"EndDate"),
-    "AdvancePayment": _stdcol(master,"AdvancePayment"),
-    "Currency": _stdcol(master,"Currency"),
+budget_df = pd.DataFrame({
+    "Month": months,
+    "Planned Revenue": planned_rev.astype(float),
+    "Planned Cost": planned_cost.astype(float),
+    "Actual Revenue": actual_rev.astype(float),
+    "Actual Cost": actual_cost.astype(float),
 })
-master["StartDate"] = pd.to_datetime(master["StartDate"]).dt.date
-master["EndDate"] = pd.to_datetime(master["EndDate"]).dt.date
+budget_df["MonthLabel"] = budget_df["Month"].dt.strftime("%Y-%m")
 
-budget = _read_any(up_budget) or sample_budgets()
-budget = _rename(budget, {
-    "Project": _stdcol(budget,"Project"),
-    "Version": _stdcol(budget,"Version") or "Version",
-    "Month": _stdcol(budget,"Month"),
-    "Type": _stdcol(budget,"Type") or "Type",
-    "Item": _stdcol(budget,"Item") or "Item",
-    "Planned": _stdcol(budget,"Planned"),
-})
-budget["Month"] = pd.to_datetime(budget["Month"]).dt.to_period("M").dt.to_timestamp("MS")
-budget["Planned"] = _safe_num(budget["Planned"])
-if "Version" not in budget.columns: budget["Version"] = "V1"
-if "Type" not in budget.columns: budget["Type"] = "Cost"  # fallback
+# Client invoices (subset paid/collected)
+client_invoices = pd.DataFrame([
+    ["PHX-INV-001","2025-01-20","2025-02-20", 240_000, 160_000, "Mobilization"],
+    ["PHX-INV-002","2025-02-25","2025-03-27", 260_000, 260_000, "Progress #1"],
+    ["PHX-INV-003","2025-03-25","2025-04-26", 310_000,  90_000, "Progress #2"],
+    ["PHX-INV-004","2025-04-28","2025-05-28", 295_000,   0,      "Variation #1"],
+    ["PHX-INV-005","2025-05-25","2025-06-25", 320_000, 200_000, "Progress #3"],
+], columns=["InvoiceNo","Date","DueDate","Amount","Collected","Notes"])
+for c in ["Date","DueDate"]:
+    client_invoices[c] = pd.to_datetime(client_invoices[c]).dt.date
+client_invoices["Outstanding"] = client_invoices["Amount"] - client_invoices["Collected"]
 
-actuals = _read_any(up_actuals) or sample_actuals()
-actuals = _rename(actuals, {
-    "Date": _stdcol(actuals,"Date"),
-    "Project": _stdcol(actuals,"Project"),
-    "Type": _stdcol(actuals,"Type"),
-    "Category": _stdcol(actuals,"Category") or "Category",
-    "Amount": _stdcol(actuals,"Amount"),
-})
-actuals["Date"] = pd.to_datetime(actuals["Date"]).dt.date
-actuals["Month"] = pd.to_datetime(actuals["Date"]).to_period("M").dt.to_timestamp("MS")
-actuals["Amount"] = _safe_num(actuals["Amount"])
-actuals["Type"] = actuals["Type"].str.title()
+# Supplier invoices
+supplier_invoices = pd.DataFrame([
+    ["PHX-SUP-001","Supplier A","2025-01-18","2025-03-04", 160_000, 160_000],
+    ["PHX-SUP-002","Supplier B","2025-02-10","2025-03-27", 120_000,  70_000],
+    ["PHX-SUP-003","Supplier C","2025-03-05","2025-04-20", 210_000,  80_000],
+    ["PHX-SUP-004","Supplier A","2025-04-12","2025-05-27", 140_000,  60_000],
+    ["PHX-SUP-005","Supplier D","2025-05-19","2025-07-03", 180_000,   0],
+], columns=["InvoiceNo","Supplier","Date","DueDate","Amount","Paid"])
+for c in ["Date","DueDate"]:
+    supplier_invoices[c] = pd.to_datetime(supplier_invoices[c]).dt.date
+supplier_invoices["Outstanding"] = supplier_invoices["Amount"] - supplier_invoices["Paid"]
 
-cinv = _read_any(up_cinv) or sample_client_invoices()
-cinv = _rename(cinv, {
-    "InvoiceNo": _stdcol(cinv,"InvoiceNo") or "InvoiceNo",
-    "Project": _stdcol(cinv,"Project"),
-    "Client": _stdcol(cinv,"Client") or "Client",
-    "Date": _stdcol(cinv,"Date"),
-    "DueDate": _stdcol(cinv,"DueDate") or "DueDate",
-    "Amount": _stdcol(cinv,"Amount"),
-    "Collected": _stdcol(cinv,"Collected") or "Collected",
-})
-for col in ["Date","DueDate"]:
-    if col in cinv.columns: cinv[col] = pd.to_datetime(cinv[col]).dt.date
-cinv["Amount"] = _safe_num(cinv["Amount"])
-if "Collected" not in cinv.columns: cinv["Collected"] = 0.0
-cinv["Collected"] = _safe_num(cinv["Collected"])
-cinv["Outstanding"] = cinv["Amount"] - cinv["Collected"]
+# Client payments (cheques under collection etc.)
+client_payments = pd.DataFrame([
+    ["PHX-PAY-001","2025-02-05", 160_000,"cheque","collected"],
+    ["PHX-PAY-002","2025-03-10",  90_000,"cheque","under_collection"],
+    ["PHX-PAY-003","2025-04-02", 200_000,"transfer","collected"],
+    ["PHX-PAY-004","2025-05-15", 110_000,"cheque","under_collection"],
+], columns=["PaymentNo","Date","Amount","Method","Status"])
+client_payments["Date"] = pd.to_datetime(client_payments["Date"]).dt.date
 
-sinv = _read_any(up_sinv) or sample_supplier_invoices()
-sinv = _rename(sinv, {
-    "InvoiceNo": _stdcol(sinv,"InvoiceNo") or "InvoiceNo",
-    "Supplier": _stdcol(sinv,"Supplier") or "Supplier",
-    "Project": _stdcol(sinv,"Project"),
-    "Date": _stdcol(sinv,"Date"),
-    "DueDate": _stdcol(sinv,"DueDate") or "DueDate",
-    "Amount": _stdcol(sinv,"Amount"),
-    "Paid": _stdcol(sinv,"Paid") or "Paid",
-})
-for col in ["Date","DueDate"]:
-    if col in sinv.columns: sinv[col] = pd.to_datetime(sinv[col]).dt.date
-sinv["Amount"] = _safe_num(sinv["Amount"])
-if "Paid" not in sinv.columns: sinv["Paid"] = 0.0
-sinv["Paid"] = _safe_num(sinv["Paid"])
-sinv["Outstanding"] = sinv["Amount"] - sinv["Paid"]
+# Supplier payments (cheques issued)
+supplier_payments = pd.DataFrame([
+    ["PHX-SPY-001","2025-03-07", 70_000,"cheque","cheque_issued","Supplier B"],
+    ["PHX-SPY-002","2025-03-22", 80_000,"cheque","cheque_under_collection","Supplier C"],
+    ["PHX-SPY-003","2025-04-29", 60_000,"transfer","paid","Supplier A"],
+], columns=["PaymentNo","Date","Amount","Method","Status","Supplier"])
+supplier_payments["Date"] = pd.to_datetime(supplier_payments["Date"]).dt.date
 
-cpay = _read_any(up_cpay) or sample_client_payments()
-cpay = _rename(cpay, {
-    "PaymentNo": _stdcol(cpay,"PaymentNo") or "PaymentNo",
-    "Project": _stdcol(cpay,"Project"),
-    "Date": _stdcol(cpay,"Date"),
-    "Amount": _stdcol(cpay,"Amount"),
-    "Method": _stdcol(cpay,"Method") or "Method",
-    "Status": _stdcol(cpay,"Status") or "Status",
-})
-cpay["Date"] = pd.to_datetime(cpay["Date"]).dt.date
-cpay["Amount"] = _safe_num(cpay["Amount"])
-cpay["Status"] = cpay["Status"].str.lower()
-
-spay = _read_any(up_spay) or sample_supplier_payments()
-spay = _rename(spay, {
-    "PaymentNo": _stdcol(spay,"PaymentNo") or "PaymentNo",
-    "Project": _stdcol(spay,"Project"),
-    "Date": _stdcol(spay,"Date"),
-    "Amount": _stdcol(spay,"Amount"),
-    "Method": _stdcol(spay,"Method") or "Method",
-    "Status": _stdcol(spay,"Status") or "Status",
-    "Supplier": _stdcol(spay,"Supplier") or "Supplier",
-})
-spay["Date"] = pd.to_datetime(spay["Date"]).dt.date
-spay["Amount"] = _safe_num(spay["Amount"])
-spay["Status"] = spay["Status"].str.lower()
-
-emps = _read_any(up_emp) or sample_employees()
-emps = _rename(emps, {
-    "Employee": _stdcol(emps,"Employee") or "Employee",
-    "Role": _stdcol(emps,"Role") or "Role",
-    "Project": _stdcol(emps,"Project"),
-    "Start": _stdcol(emps,"Start") or "Start",
-    "End": _stdcol(emps,"End") or "End",
-    "CostRate": _stdcol(emps,"CostRate") or "CostRate",
-    "AllocationPct": _stdcol(emps,"AllocationPct") or "AllocationPct",
-})
+# Employees assigned
+employees = pd.DataFrame([
+    ["Emp 01","Project Manager","2025-01-10","2025-12-31", 38_000, 1.0],
+    ["Emp 02","Site Engineer","2025-01-15","2025-12-31", 23_000, 1.0],
+    ["Emp 03","Surveyor","2025-01-20","2025-12-31", 18_000, 0.8],
+    ["Emp 04","Technician","2025-01-25","2025-12-31", 14_000, 0.7],
+    ["Emp 05","Driver","2025-02-01","2025-12-31", 12_000, 0.7],
+], columns=["Employee","Role","Start","End","CostRate","AllocationPct"])
 for c in ["Start","End"]:
-    if c in emps.columns: emps[c] = pd.to_datetime(emps[c]).dt.date
-for c in ["CostRate","AllocationPct"]:
-    if c in emps.columns: emps[c] = _safe_num(emps[c])
+    employees[c] = pd.to_datetime(employees[c]).dt.date
+employees["MonthlyCost"] = employees["CostRate"] * employees["AllocationPct"]
 
-# ======================================================================================
-# Sidebar filters
-# ======================================================================================
-st.sidebar.header("Filters")
+# ===================== CALCS =====================
+executed_revenue = budget_df["Actual Revenue"].sum()
+executed_cost    = budget_df["Actual Cost"].sum()
+profit           = executed_revenue - executed_cost
+margin_pct       = (profit / executed_revenue * 100) if executed_revenue else 0.0
 
-projects = sorted(list(set(master["Project"]) | set(budget["Project"]) | set(actuals["Project"]) |
-                      set(cinv["Project"]) | set(sinv["Project"])))
-project = st.sidebar.selectbox("Project", projects, index=0)
+contract_total   = master["ContractAmount"] + master["AdditionalWork"]
+backlog          = max(contract_total - executed_revenue, 0.0)
 
-# Version list from budgets
-versions = sorted(budget.loc[budget["Project"]==project,"Version"].unique().tolist())
-version = st.sidebar.selectbox("Budget Version", versions, index=0 if versions else None)
+cheques_under_collection = client_payments.query("Method=='cheque' and Status=='under_collection'")["Amount"].sum()
+client_collected         = client_payments.query("Status=='collected'")["Amount"].sum()
+supplier_cheques_out     = supplier_payments.query("Status in ['cheque_issued','cheque_under_collection']")["Amount"].sum()
+supplier_total_invoices  = supplier_invoices["Amount"].sum()
 
-# Date range from actuals/invoices
-min_d = min(
-    actuals.loc[actuals["Project"]==project,"Date"].min() if not actuals.empty else date.today(),
-    cinv.loc[cinv["Project"]==project,"Date"].min() if not cinv.empty else date.today(),
-    sinv.loc[sinv["Project"]==project,"Date"].min() if not sinv.empty else date.today(),
-)
-max_d = max(
-    actuals.loc[actuals["Project"]==project,"Date"].max() if not actuals.empty else date.today(),
-    cinv.loc[cinv["Project"]==project,"Date"].max() if not cinv.empty else date.today(),
-    sinv.loc[sinv["Project"]==project,"Date"].max() if not sinv.empty else date.today(),
-)
-cfd1, cfd2 = st.sidebar.columns(2)
-from_date = cfd1.date_input("From", min_d)
-to_date   = cfd2.date_input("To",   max_d)
+# ===================== HEADER =====================
+st.write(f"**Project:** {PROJECT}  •  **Client:** {master['Client']}")
 
-# Filtered views
-mrow = master[master["Project"]==project].iloc[0] if (master["Project"]==project).any() else None
-b_proj = budget[(budget["Project"]==project) & (budget["Version"]==version)].copy()
-a_proj = actuals[(actuals["Project"]==project) & (actuals["Date"]>=from_date) & (actuals["Date"]<=to_date)].copy()
-cinv_p = cinv[(cinv["Project"]==project) & (cinv["Date"]>=from_date) & (cinv["Date"]<=to_date)].copy()
-sinv_p = sinv[(sinv["Project"]==project) & (sinv["Date"]>=from_date) & (sinv["Date"]<=to_date)].copy()
-cpay_p = cpay[(cpay["Project"]==project) & (cpay["Date"]>=from_date) & (cpay["Date"]<=to_date)].copy()
-spay_p = spay[(spay["Project"]==project) & (spay["Date"]>=from_date) & (spay["Date"]<=to_date)].copy()
-emps_p = emps[emps["Project"]==project].copy()
+# KPIs Row 1
+r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+with r1c1:
+    st.markdown('<div class="card"><div>Contract amount</div>'
+                f'<div class="metric">{master["ContractAmount"]:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Additional work: {master["AdditionalWork"]:,.0f}</div></div>', unsafe_allow_html=True)
+with r1c2:
+    st.markdown('<div class="card"><div>Subcontract amount</div>'
+                f'<div class="metric">{master["SubcontractAmount"]:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Advance: {master["AdvancePayment"]:,.0f}</div></div>', unsafe_allow_html=True)
+with r1c3:
+    st.markdown('<div class="card"><div>Total executed (Revenue)</div>'
+                f'<div class="metric">{executed_revenue:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Progress vs contract</div></div>', unsafe_allow_html=True)
+    st.progress(min(1.0, executed_revenue / max(contract_total, 1)))
+with r1c4:
+    st.markdown('<div class="card"><div>Margins</div>'
+                f'<div class="metric">{profit:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Margin: {margin_pct:.2f}%</div></div>', unsafe_allow_html=True)
 
-# ======================================================================================
-# TOP KPIs BLOCK (as in your sketch)
-# ======================================================================================
-st.subheader("Snapshot")
+# KPIs Row 2
+r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+with r2c1:
+    st.markdown('<div class="card"><div>Client</div>'
+                f'<div class="metric">{master["Client"]}</div>'
+                f'<div class="metric-sub">Backlog: {backlog:,.0f} {CURRENCY}</div></div>', unsafe_allow_html=True)
+with r2c2:
+    st.markdown('<div class="card"><div>Start date</div>'
+                f'<div class="metric">{master["StartDate"]}</div>'
+                f'<div class="metric-sub">End: {master["EndDate"]}</div></div>', unsafe_allow_html=True)
+with r2c3:
+    st.markdown('<div class="card"><div>Cheques under collection</div>'
+                f'<div class="metric">{cheques_under_collection:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Client collected: {client_collected:,.0f}</div></div>', unsafe_allow_html=True)
+with r2c4:
+    st.markdown('<div class="card"><div>Suppliers cheques</div>'
+                f'<div class="metric">{supplier_cheques_out:,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Total supplier invoices: {supplier_total_invoices:,.0f}</div></div>', unsafe_allow_html=True)
 
-c1, c2, c3, c4 = st.columns(4)
-c5, c6, c7, c8 = st.columns(4)
+st.markdown("## <span>Budgets — Actual vs Planned</span>", unsafe_allow_html=True)
 
-contract_amt   = float(mrow["ContractAmount"]) if mrow is not None else 0.0
-subcontract_amt= float(mrow["SubcontractAmount"]) if mrow is not None else 0.0
-additional_amt = float(mrow["AdditionalWork"]) if mrow is not None else 0.0
-advance        = float(mrow["AdvancePayment"]) if mrow is not None else 0.0
+# ===================== CHARTS =====================
+def money_fmt(v): return f"{v:,.0f}"
 
-revenue = a_proj.loc[a_proj["Type"]=="Revenue","Amount"].sum()
-expense = a_proj.loc[a_proj["Type"]=="Expense","Amount"].sum()  # negative
-profit  = revenue + expense
-margin  = (profit/revenue*100.0) if revenue else 0.0
+def line_block(df, plan_col, actual_col, title):
+    base = alt.Chart(df).encode(x=alt.X('Month:T', title=None))
+    line_plan = base.mark_line(strokeDash=[6,4], strokeWidth=2).encode(y=alt.Y(f'{plan_col}:Q', title=None), color=alt.value("#9CA3AF"))
+    line_act  = base.mark_line(point=True, strokeWidth=3).encode(y=alt.Y(f'{actual_col}:Q'), color=alt.value("#2563EB"))
+    rule = alt.Chart(df).mark_rule(color="#E5E7EB").encode(x='monthdate(Month):T')
+    return (line_plan + line_act + rule).properties(height=280, title=title).configure_title(fontSize=14, anchor='start')
 
-c1.metric("Contract amount", f"{contract_amt:,.0f}")
-c2.metric("Subcontract amount", f"{subcontract_amt:,.0f}")
-c3.metric("Additional work", f"{additional_amt:,.0f}")
-c4.metric("Total executed (Revenue)", f"{revenue:,.0f}")
+col_a, col_b = st.columns(2)
+with col_a:
+    st.altair_chart(line_block(budget_df, "Planned Revenue", "Actual Revenue", "Revenue"), use_container_width=True)
+with col_b:
+    st.altair_chart(line_block(budget_df, "Planned Cost", "Actual Cost", "Cost"), use_container_width=True)
 
-client_name = (mrow["Client"] if (mrow is not None and "Client" in mrow) else "")
-c5.metric("Client", client_name)
-c6.metric("Start date", str(mrow["StartDate"]) if mrow is not None else "-")
-c7.metric("End date", str(mrow["EndDate"]) if mrow is not None else "-")
-c8.metric("Margins", f"{profit:,.0f}  ({margin:.2f}%)")
+# Variance table
+summary = pd.DataFrame({
+    "Planned Revenue": [budget_df["Planned Revenue"].sum()],
+    "Actual Revenue":  [budget_df["Actual Revenue"].sum()],
+    "Planned Cost":    [budget_df["Planned Cost"].sum()],
+    "Actual Cost":     [budget_df["Actual Cost"].sum()],
+})
+summary["Revenue Var"] = summary["Actual Revenue"] - summary["Planned Revenue"]
+summary["Cost Var"]    = summary["Actual Cost"] - summary["Planned Cost"]
+summary["Actual Profit"] = summary["Actual Revenue"] - summary["Actual Cost"]
+st.dataframe(summary.style.format(money_fmt), use_container_width=True)
 
-# Cheques & cash positions (your boxes)
-cheques_under_coll = cpay_p.loc[cpay_p["Status"]=="under_collection","Amount"].sum()
-client_paid        = cpay_p.loc[cpay_p["Status"]=="collected","Amount"].sum()
-sup_cheque_out     = spay_p.loc[spay_p["Status"].isin(["cheque_issued","cheque_under_collection"]),"Amount"].sum()
-total_suppliers    = sinv_p["Amount"].sum()
+# ===================== INVOICES =====================
+st.markdown("## <span>Invoices</span>", unsafe_allow_html=True)
+i_left, i_right = st.columns(2)
 
-st.write("")
-d1,d2,d3,d4 = st.columns(4)
-d1.metric("Cheques under collection", f"{cheques_under_coll:,.0f}")
-d2.metric("Client payments (collected)", f"{client_paid:,.0f}")
-d3.metric("Suppliers cheques (issued/under collection)", f"{sup_cheque_out:,.0f}")
-d4.metric("Total suppliers (invoices)", f"{total_suppliers:,.0f}")
-
-# ======================================================================================
-# Budgets: Planned vs Actual (Revenue & Cost) — big panel in your sketch
-# ======================================================================================
-st.subheader("Budgets — Actual vs Planned")
-
-if b_proj.empty and a_proj.empty:
-    st.info("No data for this project.")
-else:
-    # Planned per month (Revenue/Cost)
-    plan = (b_proj.groupby(["Month","Type"])["Planned"].sum()
-                  .unstack(fill_value=0.0)
-                  .reindex(columns=["Revenue","Cost"], fill_value=0.0)
-                  .sort_index())
-    # Actuals per month (Revenue/Expense)
-    actual = (a_proj.groupby(["Month","Type"])["Amount"].sum()
-                    .unstack(fill_value=0.0)
-                    .reindex(columns=["Revenue","Expense"], fill_value=0.0)
-                    .sort_index())
-    # Build a single frame for charts
-    chart = pd.DataFrame(index=sorted(set(plan.index) | set(actual.index)))
-    chart["Planned Revenue"] = plan.get("Revenue",0.0)
-    chart["Planned Cost"]    = plan.get("Cost",0.0)
-    chart["Actual Revenue"]  = actual.get("Revenue",0.0)
-    chart["Actual Cost"]     = -actual.get("Expense",0.0)  # show positive cost for chart
-    chart = chart.fillna(0.0)
-
-    st.line_chart(chart)
-
-    # Summary table with variance
-    summary = pd.DataFrame({
-        "Planned Revenue": [chart["Planned Revenue"].sum()],
-        "Actual Revenue": [chart["Actual Revenue"].sum()],
-        "Planned Cost": [chart["Planned Cost"].sum()],
-        "Actual Cost": [chart["Actual Cost"].sum()],
-    })
-    summary["Revenue Var"] = summary["Actual Revenue"] - summary["Planned Revenue"]
-    summary["Cost Var"]    = summary["Actual Cost"] - summary["Planned Cost"]
-    summary["Profit (Actual)"] = summary["Actual Revenue"] - summary["Actual Cost"]
-    st.dataframe(summary.style.format("{:,.0f}"), use_container_width=True)
-
-# ======================================================================================
-# Client invoices (left) & Supplier invoices (right) — with totals like your sketch
-# ======================================================================================
-st.subheader("Invoices")
-
-left, right = st.columns(2)
-
-with left:
-    st.markdown("##### Client invoices")
-    if cinv_p.empty:
-        st.info("No client invoices in range.")
-    else:
-        st.dataframe(
-            cinv_p.sort_values("Date", ascending=False)
-                  .assign(Outstanding=lambda d: d["Amount"]-d["Collected"])
-                  .style.format({"Amount":"{:,.0f}","Collected":"{:,.0f}","Outstanding":"{:,.0f}"}),
-            use_container_width=True
-        )
-        totals = cinv_p.agg({"Amount":"sum","Collected":"sum"})
-        st.write(f"**Totals** — Amount: {totals['Amount']:,.0f} • Collected: {totals['Collected']:,.0f} • Outstanding: {(totals['Amount']-totals['Collected']):,.0f}")
-
-with right:
-    st.markdown("##### Suppliers invoices")
-    if sinv_p.empty:
-        st.info("No supplier invoices in range.")
-    else:
-        st.dataframe(
-            sinv_p.sort_values("Date", ascending=False)
-                  .assign(Outstanding=lambda d: d["Amount"]-d["Paid"])
-                  .style.format({"Amount":"{:,.0f}","Paid":"{:,.0f}","Outstanding":"{:,.0f}"}),
-            use_container_width=True
-        )
-        totals = sinv_p.agg({"Amount":"sum","Paid":"sum"})
-        st.write(f"**Total** — Amount: {totals['Amount']:,.0f} • Paid: {totals['Paid']:,.0f} • Outstanding: {(totals['Amount']-totals['Paid']):,.0f}")
-
-# ======================================================================================
-# Dues & Cheques panels — bottom blocks in your sketch
-# ======================================================================================
-st.subheader("Dues & Cheques")
-
-c_left, c_right = st.columns(2)
-
-with c_left:
-    st.markdown("##### Clients dues (A/R)")
-    if cinv_p.empty:
-        st.info("No client invoices.")
-    else:
-        ar = (cinv_p.groupby("Client")[["Amount","Collected"]].sum()
-                     .assign(Outstanding=lambda d: d["Amount"]-d["Collected"])
-                     .sort_values("Outstanding", ascending=False)
-                     .reset_index())
-        st.dataframe(ar.style.format({"Amount":"{:,.0f}","Collected":"{:,.0f}","Outstanding":"{:,.0f}"}),
-                     use_container_width=True)
-
-        # Aging (optional)
-        cinv_p["Age"] = (pd.to_datetime(date.today()) - pd.to_datetime(cinv_p["DueDate"])).dt.days
-        aging_bins = pd.cut(cinv_p["Age"], [-10,0,30,60,90,9999], labels=["Not due","0-30","31-60","61-90","90+"])
-        aging = cinv_p.assign(Outstanding=lambda d: d["Amount"]-d["Collected"]).groupby(aging_bins)["Outstanding"].sum()
-        st.write("**A/R Aging**")
-        st.bar_chart(aging)
-
-with c_right:
-    st.markdown("##### Suppliers dues (A/P)")
-    if sinv_p.empty:
-        st.info("No supplier invoices.")
-    else:
-        ap = (sinv_p.groupby("Supplier")[["Amount","Paid"]].sum()
-                     .assign(Outstanding=lambda d: d["Amount"]-d["Paid"])
-                     .sort_values("Outstanding", ascending=False)
-                     .reset_index())
-        st.dataframe(ap.style.format({"Amount":"{:,.0f}","Paid":"{:,.0f}","Outstanding":"{:,.0f}"}),
-                     use_container_width=True)
-
-        # Suppliers cheques quick total
-        cheq_sup = spay_p.loc[spay_p["Status"].isin(["cheque_issued","cheque_under_collection"]),"Amount"].sum()
-        st.write(f"**Suppliers cheques outstanding:** {cheq_sup:,.0f}")
-
-# ======================================================================================
-# Employees assigned to the project — panel in your sketch
-# ======================================================================================
-st.subheader("Employees assigned")
-
-if emps_p.empty:
-    st.info("No employees for this project.")
-else:
-    emps_p = emps_p.copy()
-    emps_p["MonthlyCost"] = emps_p["CostRate"] * emps_p["AllocationPct"]
+with i_left:
+    st.markdown("#### Client invoices")
     st.dataframe(
-        emps_p[["Employee","Role","Start","End","AllocationPct","CostRate","MonthlyCost"]]
-              .style.format({"AllocationPct":"{:.0%}","CostRate":"{:,.0f}","MonthlyCost":"{:,.0f}"}),
+        client_invoices.sort_values("Date")
+            .style.format({"Amount":money_fmt,"Collected":money_fmt,"Outstanding":money_fmt}),
         use_container_width=True
     )
-    st.write(f"**Total monthly personnel cost (allocated):** {emps_p['MonthlyCost'].sum():,.0f}")
+    ci_tot = client_invoices[["Amount","Collected","Outstanding"]].sum()
+    st.markdown(f"**Totals** — Amount: {money_fmt(ci_tot['Amount'])} • Collected: {money_fmt(ci_tot['Collected'])} • Outstanding: {money_fmt(ci_tot['Outstanding'])}")
 
-# ======================================================================================
-# Extras I recommend on a project dashboard (helpful in practice)
-# ======================================================================================
-st.subheader("Extras (recommended)")
+with i_right:
+    st.markdown("#### Suppliers invoices")
+    st.dataframe(
+        supplier_invoices.sort_values("Date")
+            .style.format({"Amount":money_fmt,"Paid":money_fmt,"Outstanding":money_fmt}),
+        use_container_width=True
+    )
+    si_tot = supplier_invoices[["Amount","Paid","Outstanding"]].sum()
+    st.markdown(f"**Total** — Amount: {money_fmt(si_tot['Amount'])} • Paid: {money_fmt(si_tot['Paid'])} • Outstanding: {money_fmt(si_tot['Outstanding'])}")
 
-# Backlog & forecast margin
-executed_rev = actuals[(actuals["Project"]==project)]["Amount"]
-executed_rev = executed_rev[executed_rev>0].sum()
-contract_total = contract_amt + additional_amt
-backlog = max(contract_total - executed_rev, 0)
-projected_profit = (contract_total - (sinv[sinv['Project']==project]['Amount'].sum()))  # simplistic
-proj_margin_pct = (projected_profit/contract_total*100.0) if contract_total else 0.0
+# ===================== DUES & AGING =====================
+st.markdown("## <span>Dues & Cheques</span>", unsafe_allow_html=True)
+d_left, d_right = st.columns(2)
 
-x1, x2, x3 = st.columns(3)
-x1.metric("Backlog (remaining contract)", f"{backlog:,.0f}")
-x2.metric("Projected profit (contract - supplier invoices)", f"{projected_profit:,.0f}")
-x3.metric("Projected margin %", f"{proj_margin_pct:.2f}%")
+with d_left:
+    st.markdown("#### Clients dues (A/R)")
+    ar = client_invoices.groupby("DueDate")[["Outstanding"]].sum().reset_index()
+    if not ar.empty:
+        chart_ar = alt.Chart(ar).mark_bar().encode(
+            x=alt.X('yearmonth(DueDate):T', title=None),
+            y=alt.Y('Outstanding:Q', title='Outstanding'),
+            tooltip=['yearmonth(DueDate):T','Outstanding:Q']
+        ).properties(height=240)
+        st.altair_chart(chart_ar, use_container_width=True)
+    else:
+        st.info("No A/R.")
 
-st.caption("Upload your real files to replace the sample data. Budget file should be **long format**: "
-           "`Project, Version, Month, Type (Revenue/Cost), Item, Planned`. Actuals: `Date, Project, Type (Revenue/Expense), Category, Amount`.")
+with d_right:
+    st.markdown("#### Suppliers cheques & A/P")
+    ap = supplier_invoices.groupby("DueDate")[["Outstanding"]].sum().reset_index()
+    if not ap.empty:
+        chart_ap = alt.Chart(ap).mark_bar(color="#F59E0B").encode(
+            x=alt.X('yearmonth(DueDate):T', title=None),
+            y=alt.Y('Outstanding:Q', title='Outstanding'),
+            tooltip=['yearmonth(DueDate):T','Outstanding:Q']
+        ).properties(height=240)
+        st.altair_chart(chart_ap, use_container_width=True)
+    else:
+        st.info("No A/P.")
 
+# ===================== EMPLOYEES =====================
+st.markdown("## <span>Employees assigned</span>", unsafe_allow_html=True)
+e_left, e_right = st.columns([2,1])
+
+with e_left:
+    st.dataframe(
+        employees[["Employee","Role","Start","End","AllocationPct","CostRate","MonthlyCost"]]
+        .style.format({"AllocationPct":"{:.0%}","CostRate":money_fmt,"MonthlyCost":money_fmt}),
+        use_container_width=True
+    )
+
+with e_right:
+    headcount_by_role = employees.groupby("Role")["Employee"].count().reset_index(name="Headcount")
+    bar = alt.Chart(headcount_by_role).mark_bar().encode(
+        x=alt.X("Headcount:Q"),
+        y=alt.Y("Role:N", sort='-x'),
+        tooltip=["Role","Headcount"]
+    ).properties(height=260, title="Headcount by role")
+    st.altair_chart(bar, use_container_width=True)
+    st.markdown('<div class="card">'
+                f'<div>Total monthly personnel cost</div>'
+                f'<div class="metric">{employees["MonthlyCost"].sum():,.0f} {CURRENCY}</div>'
+                f'<div class="metric-sub">Allocated across roles</div>'
+                '</div>', unsafe_allow_html=True)
+
+st.caption("This page uses static demo data. Replace the DATA block at the top with your API results when ready.")
