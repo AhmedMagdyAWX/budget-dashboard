@@ -158,7 +158,8 @@ contract_total   = master["ContractAmount"] + master["AdditionalWork"]
 backlog          = max(contract_total - executed_revenue, 0.0)
 
 # Cashflow series (only cash that actually moved)
-def month_start(d): return pd.to_datetime(d).to_period("M").to_timestamp("MS")
+def month_start(d):
+    return pd.to_datetime(d).to_period("M").to_timestamp()
 cashin = (client_payments[client_payments["Status"]=="collected"]
           .assign(Month=lambda d: d["Date"].apply(month_start))
           .groupby("Month")["Amount"].sum())
