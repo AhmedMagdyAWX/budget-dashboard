@@ -2,6 +2,7 @@ streamlit>=1.37
 streamlit-aggrid>=0.3.5
 pandas
 openpyxl
+altair>=5
 
 
 
