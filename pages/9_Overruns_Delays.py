@@ -1,5 +1,5 @@
 # pages/9_Overruns_Delays.py
-# Track overdue tasks and hours overruns
+# Track overdue tasks and hours overruns (fixed)
 
 import streamlit as st
 import pandas as pd
@@ -28,6 +28,7 @@ tolerance_red    = st.sidebar.slider("Overrun tolerance (red)", 0, 100, 20, step
 due_soon_days    = st.sidebar.slider("Due soon threshold (days)", 1, 14, 3, step=1)
 
 today = date(2025,6,30)
+today_ts = pd.to_datetime(today)
 
 # ===================== CALCS =====================
 logged = TIMEENTRIES.groupby("task_id")["hours"].sum()
@@ -35,14 +36,26 @@ df = TASKS.copy()
 df["Logged"] = df["task_id"].map(logged).fillna(0.0)
 df["Overrun (h)"] = df["Logged"] - df["estimate_hours"]
 df["Overrun %"] = (df["Overrun (h)"] / df["estimate_hours"] * 100).replace([float("inf"), -float("inf")], 0.0)
-df["Days Late"] = (today - df["due_date"]).dt.days
+
+# Ensure due_date is datetime64 for vectorized operations
+df["due_date_dt"] = pd.to_datetime(df["due_date"])
+
+# FIX: compute days late safely (vectorized)
+df["Days Late"] = (today_ts - df["due_date_dt"]).dt.days
 df["Overdue"] = (df["Days Late"] > 0) & df["status"].ne("Done")
-df["Due Soon"] = (df["due_date"] - today).dt.days.le(due_soon_days) & df["status"].isin(["Todo","In Progress"])
-def flag(row):
-    if row["Overrun %"] >= tolerance_red or (row["Overdue"] and row["Days Late"]>=1): return "🔴"
-    if row["Overrun %"] >= tolerance_yellow or row["Due Soon"]: return "🟡"
+
+# Due soon (not done)
+df["Days To Due"] = (df["due_date_dt"] - today_ts).dt.days
+df["Due Soon"] = (df["Days To Due"] <= due_soon_days) & df["status"].isin(["Todo","In Progress"])
+
+def flag_row(row):
+    if row["Overrun %"] >= tolerance_red or (row["Overdue"] and row["Days Late"]>=1):
+        return "🔴"
+    if row["Overrun %"] >= tolerance_yellow or row["Due Soon"]:
+        return "🟡"
     return "🟢"
-df["Flag"] = df.apply(flag, axis=1)
+
+df["Flag"] = df.apply(flag_row, axis=1)
 
 # ===================== UI =====================
 st.title("⏱️ Overruns & Delays")
@@ -61,8 +74,8 @@ st.dataframe(
 )
 
 st.subheader("Overdue Calendar (Week Heat)")
-# simple weekly buckets
-df["Week"] = pd.to_datetime(df["due_date"]).dt.to_period("W").astype(str)
+df["Week"] = pd.to_datetime(df["due_date_dt"]).dt.to_period("W").astype(str)
 wd = df.groupby("Week")["Overdue"].sum()
 st.bar_chart(wd)
+
 st.caption("Adjust thresholds in the sidebar to match your policy.")
