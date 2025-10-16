@@ -1,8 +1,9 @@
 # pages/7_My_Tasks.py
-# My Tasks & Assigned by Me — kanban-style filters + quick insights
+# My Tasks & Assigned by Me — kanban-style filters + quick insights (fixed)
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import date, timedelta
 
 st.set_page_config(page_title="My Tasks", layout="wide")
@@ -29,44 +30,66 @@ TIMEENTRIES = pd.DataFrame([
 def logged_hours(task_id):
     return TIMEENTRIES.loc[TIMEENTRIES["task_id"]==task_id, "hours"].sum()
 
-def status_tag(task):
-    if task["status"]=="Done": return "✅ Done"
-    if task["status"]=="Blocked": return "⛔ Blocked"
-    if task["due_date"] < date.today(): return "⚠️ Overdue"
-    if task["status"]=="In Progress": return "🟡 In Progress"
-    return "📝 Todo"
-
 # ===================== FILTERS =====================
 st.title("🧩 My Tasks")
 tab1, tab2 = st.tabs(["Assigned to Me", "Assigned by Me"])
 
-for tab, df in [(tab1, TASKS[TASKS["assignee_id"]==ME]), (tab2, TASKS[TASKS["assigner_id"]==ME])]:
+for tab, base_df, label in [
+    (tab1, TASKS[TASKS["assignee_id"]==ME].copy(), "Assigned to Me"),
+    (tab2, TASKS[TASKS["assigner_id"]==ME].copy(), "Assigned by Me"),
+]:
     with tab:
         left, right = st.columns([3,1])
         with right:
-            project = st.selectbox("Project", ["All"]+PROJECTS["project_id"].tolist(), format_func=lambda pid: "All" if pid=="All" else PROJECTS.set_index("project_id").loc[pid,"name"])
-            status = st.multiselect("Status", ["Todo","In Progress","Blocked","Done"], default=["Todo","In Progress","Blocked","Done"])
-            overdue_only = st.checkbox("Overdue only")
+            project = st.selectbox(
+                "Project",
+                ["All"] + PROJECTS["project_id"].tolist(),
+                format_func=lambda pid: "All" if pid=="All" else PROJECTS.set_index("project_id").loc[pid,"name"],
+                key=f"proj_{label}",
+            )
+            status = st.multiselect("Status", ["Todo","In Progress","Blocked","Done"],
+                                    default=["Todo","In Progress","Blocked","Done"],
+                                    key=f"status_{label}")
+            overdue_only = st.checkbox("Overdue only", key=f"overdue_{label}")
         with left:
-            # apply filters
-            q = df.copy()
-            if project!="All": q = q[q["project_id"]==project]
-            q = q[q["status"].isin(status)]
-            if overdue_only: q = q[q["due_date"]<date.today() & q["status"].ne("Done")]
+            q = base_df.copy()
+            # normalize due_date to datetime for safe comparisons
+            q["due_date_dt"] = pd.to_datetime(q["due_date"])
+            if project!="All":
+                q = q[q["project_id"]==project]
+            if status:
+                q = q[q["status"].isin(status)]
+            if overdue_only:
+                # FIX: add parentheses for proper precedence
+                q = q[(q["due_date_dt"] < pd.to_datetime(date.today())) & q["status"].ne("Done")]
 
-            st.subheader(f"{'Assigned to Me' if 'assignee_id' in df.columns else 'Assigned by Me'} — {len(q)} tasks")
+            st.subheader(f"{label} — {len(q)} tasks")
+
             # simple kanban columns
             k1,k2,k3,k4 = st.columns(4)
             for col, stat in zip([k1,k2,k3,k4], ["Todo","In Progress","Blocked","Done"]):
                 subset = q[q["status"]==stat].copy()
                 subset["Logged"] = subset["task_id"].apply(logged_hours)
                 subset["Remain"] = (subset["estimate_hours"] - subset["Logged"]).clip(lower=0)
-                subset["Tag"] = subset.apply(status_tag, axis=1)
+
+                # Vectorized tag (replaces row-wise apply to avoid assignment error)
+                is_done = subset["status"].eq("Done")
+                is_blocked = subset["status"].eq("Blocked")
+                is_overdue = (subset["due_date_dt"] < pd.to_datetime(date.today())) & subset["status"].ne("Done")
+                is_inprog = subset["status"].eq("In Progress")
+                subset["Tag"] = np.select(
+                    [is_done, is_blocked, is_overdue, is_inprog],
+                    ["✅ Done","⛔ Blocked","⚠️ Overdue","🟡 In Progress"],
+                    default="📝 Todo"
+                )
+
                 col.markdown(f"**{stat} ({len(subset)})**")
                 if subset.empty:
                     col.info("No tasks")
                 else:
-                    col.dataframe(subset[["title","priority","due_date","estimate_hours","Logged","Remain","Tag"]]
-                                  .rename(columns={"title":"Task","due_date":"Due","estimate_hours":"Est. Hrs"})
-                                  .style.format({"Est. Hrs":"{:.1f}","Logged":"{:.1f}","Remain":"{:.1f}"}),
-                                  use_container_width=True)
+                    col.dataframe(
+                        subset[["title","priority","due_date","estimate_hours","Logged","Remain","Tag"]]
+                            .rename(columns={"title":"Task","due_date":"Due","estimate_hours":"Est. Hrs"})
+                            .style.format({"Est. Hrs":"{:.1f}","Logged":"{:.1f}","Remain":"{:.1f}"}),
+                        use_container_width=True
+                    )
