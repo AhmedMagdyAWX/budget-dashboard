@@ -1,6 +1,6 @@
 # pages/6_Activity_Sheet.py
-# Activity Sheet with period selector: Week / Month / Custom
-# Rows = dates in period; columns: Date | Day | Logs | Total Hours
+# Activity Sheet with period selector (Week / Month / Custom)
+# Rows = dates in period; columns: Date | Day | Logs | Total Hours + TOTAL row
 
 import streamlit as st
 import pandas as pd
@@ -29,7 +29,7 @@ TASKS = pd.DataFrame([
     ["T-004","PRJ-002","QA & Docs","E-02","QA", 140, date(2025,7,20),"Todo"],
 ], columns=["task_id","project_id","title","assignee_id","category","estimate_hours","due_date","status"])
 
-# Demo time entries across multiple weeks
+# Demo time entries across multiple weeks (some setups may omit project_id; we handle that below)
 today = date(2025, 6, 30)
 def daterange(start, end):
     for n in range((end-start).days+1): yield start + timedelta(days=n)
@@ -37,31 +37,23 @@ def daterange(start, end):
 TE=[]
 rng = np.random.RandomState(12)
 for d in daterange(today - timedelta(days=60), today):
-    # random Mon–Fri activity
-    if d.weekday() < 5:
+    if d.weekday() < 5:  # Mon–Fri
         hrs1 = rng.choice([0, 2, 3, 4, 5, 6])
         hrs2 = rng.choice([0, 1, 2, 3])
         if hrs1:
-            TE.append([f"TE-{d}-1","T-002","PRJ-001","E-02", d, float(hrs1), True, None, "dev work"])
+            TE.append([f"TE-{d}-1","T-002","PRJ-001", "E-02", d, float(hrs1), True,  None, "dev work"])
         if hrs2:
-            TE.append([f"TE-{d}-2","T-004","PRJ-002","E-02", d, float(hrs2), False, None, "docs"])
+            TE.append([f"TE-{d}-2","T-004","PRJ-002", "E-02", d, float(hrs2), False, None, "docs"])
 TIMEENTRIES = pd.DataFrame(TE, columns=["timeentry_id","task_id","project_id","employee_id","date","hours","billable","rate_at_entry","notes"])
 
 # ===================== HELPERS =====================
 def week_bounds(d: date):
-    """Return Monday..Sunday containing date d."""
-    start = d - timedelta(days=d.weekday())
-    end = start + timedelta(days=6)
-    return start, end
+    start = d - timedelta(days=d.weekday()); end = start + timedelta(days=6); return start, end
 
 def month_bounds(d: date):
-    """First..last day of d's month."""
-    start = date(d.year, d.month, 1)
-    end = date(d.year, d.month, monthrange(d.year, d.month)[1])
-    return start, end
+    start = date(d.year, d.month, 1); end = date(d.year, d.month, monthrange(d.year, d.month)[1]); return start, end
 
 def format_logs_for_day(df_day: pd.DataFrame) -> str:
-    """Compact string: 'Project / Task — 6.0h • Project / Task — 2.0h'"""
     if df_day.empty: return ""
     parts = []
     for r in df_day.sort_values("hours", ascending=False).itertuples():
@@ -89,8 +81,7 @@ if period_mode == "Week":
 elif period_mode == "Month":
     month_day = st.sidebar.date_input("Any day in the month", value=today)
     start, end = month_bounds(month_day)
-else:  # Custom
-    # use available TE range as defaults
+else:
     min_d = TIMEENTRIES["date"].min() if not TIMEENTRIES.empty else today - timedelta(days=30)
     max_d = TIMEENTRIES["date"].max() if not TIMEENTRIES.empty else today
     start, end = st.sidebar.date_input("From / To", value=(min_d, max_d), min_value=min_d, max_value=max_d)
@@ -105,12 +96,35 @@ sheet = TIMEENTRIES[
     (TIMEENTRIES["date"] <= end)
 ].copy()
 
-# Join project/task names
-TASKS_L = TASKS[["task_id","title","project_id"]]
-PROJECTS_L = PROJECTS.set_index("project_id")["name"]
-sheet = sheet.merge(TASKS_L, on="task_id", how="left")
-sheet["project_name"] = sheet["project_id"].map(PROJECTS_L)
+# --- ROBUST project_id recovery ---
+# Some datasets may lack 'project_id' or have it split as project_id_x/y after merges.
+if "project_id" not in sheet.columns:
+    # derive from TASKS via task_id
+    sheet = sheet.merge(TASKS[["task_id","project_id"]], on="task_id", how="left")
+elif "project_id_x" in sheet.columns or "project_id_y" in sheet.columns:
+    # normalize to a single 'project_id'
+    if "project_id" not in sheet.columns:
+        sheet["project_id"] = sheet.get("project_id_x", sheet.get("project_id_y"))
+    else:
+        # prefer the primary, otherwise fill from the aux
+        if "project_id_x" in sheet.columns:
+            sheet["project_id"] = sheet["project_id"].fillna(sheet["project_id_x"])
+        if "project_id_y" in sheet.columns:
+            sheet["project_id"] = sheet["project_id"].fillna(sheet["project_id_y"])
 
+# Join task title & (ensure) project_id
+sheet = sheet.merge(TASKS[["task_id","title","project_id"]], on="task_id", how="left", suffixes=("","_task"))
+# If project_id still missing, take from the task side
+if "project_id" not in sheet.columns and "project_id_task" in sheet.columns:
+    sheet["project_id"] = sheet["project_id_task"]
+elif "project_id_task" in sheet.columns:
+    sheet["project_id"] = sheet["project_id"].fillna(sheet["project_id_task"])
+
+# Map project name safely
+PROJ_MAP = PROJECTS.set_index("project_id")["name"]
+sheet["project_name"] = sheet["project_id"].map(PROJ_MAP).fillna("Unknown Project")
+
+# Build rows per date
 rows = []
 grand_total = 0.0
 for d in days:
@@ -159,4 +173,4 @@ k3.metric("Utilization", f"{util:.0f}%")
 csv = df_view.to_csv(index=False)
 st.download_button("⬇️ Download CSV", data=csv, file_name=f"activity_{emp_id}_{start}_to_{end}.csv", mime="text/csv")
 
-st.caption("Replace the DEMO DATA block with your API results. Keep column names to reuse this view unchanged.")
+st.caption("If your API doesn't return project_id in time entries, this page now derives it from tasks to avoid errors.")
