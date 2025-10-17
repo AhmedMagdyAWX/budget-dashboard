@@ -1,6 +1,6 @@
 # pages/11_Portfolio_Snapshot.py
-# Multi-project portfolio snapshot: heatmap-style table + bubble chart + top/bottom bars
-# Uses Streamlit + Vega-Lite (no matplotlib dependency)
+# Multi-project portfolio snapshot: heatmap table + Vega-Lite bubble + top/bottom bars
+# Vector-safe pct() to avoid ambiguous truth-value errors
 
 import streamlit as st
 import pandas as pd
@@ -52,6 +52,13 @@ def money(x):
     except: return "0"
 
 def pct(n, d):
+    """Percentage helper that supports scalars and pandas Series."""
+    if isinstance(n, (pd.Series, pd.DataFrame)) or isinstance(d, (pd.Series, pd.DataFrame)):
+        n_s = n if isinstance(n, pd.Series) else pd.Series(n)
+        d_s = d if isinstance(d, pd.Series) else pd.Series(d)
+        res = (n_s / d_s.replace(0, np.nan)) * 100
+        return res.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # scalar path
     return (n/d*100) if d else 0.0
 
 # ===================== CALCS PER PROJECT =====================
@@ -135,7 +142,6 @@ st.dataframe(
 # ===================== BUBBLE CHART (Vega-Lite) =====================
 st.subheader("Margin vs Utilization (bubble ~ remaining budget)")
 
-# Utilization proxy per project
 months = 6
 capacity_proxy = 480.0 * months
 util = (perf_f["Hours"] / capacity_proxy * 100).clip(upper=200)
