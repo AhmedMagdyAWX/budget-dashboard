@@ -1,8 +1,6 @@
 # pages/6_Activity_Sheet.py
 # Activity Sheet with Week/Month/Custom + merged Date/Day cells (rowspan).
-# Columns: Date | Day | Task | Project | Hours
-# Each day may have multiple task rows; Date/Day cells are merged across those rows.
-# A TOTAL row is appended at the end.
+# Columns: Date | Day | Task | Project | Hours | Daily Total
 
 import streamlit as st
 import pandas as pd
@@ -73,7 +71,7 @@ def build_rows(emp_id: str, start: date, end: date) -> pd.DataFrame:
     # Ensure project_id exists (derive from tasks if not)
     if "project_id" not in sheet.columns:
         sheet = sheet.merge(TASKS[["task_id","project_id"]], on="task_id", how="left")
-    # Join task title & project name
+    # Join task title & project id (normalize) and name
     sheet = sheet.merge(TASKS[["task_id","title","project_id"]], on="task_id", how="left", suffixes=("","_task"))
     if "project_id" not in sheet.columns and "project_id_task" in sheet.columns:
         sheet["project_id"] = sheet["project_id_task"]
@@ -82,12 +80,11 @@ def build_rows(emp_id: str, start: date, end: date) -> pd.DataFrame:
     proj_map = PROJECTS.set_index("project_id")["name"]
     sheet["project_name"] = sheet["project_id"].map(proj_map).fillna("Unknown Project")
 
-    # Build per-task rows
+    # Per-log rows
     records = []
     for d in sorted(period_dates(start, end)):
         day_logs = sheet[sheet["date"] == d].sort_values(["project_name","title"], ascending=True)
         if day_logs.empty:
-            # empty day still gets one row with 0 hours
             records.append([d, d.strftime("%A"), "", "", 0.0])
         else:
             for r in day_logs.itertuples():
@@ -95,17 +92,18 @@ def build_rows(emp_id: str, start: date, end: date) -> pd.DataFrame:
     return pd.DataFrame(records, columns=["Date","Day","Task","Project","Hours"])
 
 def render_html_table(df: pd.DataFrame) -> str:
-    """Render HTML table with rowspan merged cells for Date/Day per day."""
-    # group by Date to compute rowspans
+    """Render HTML with rowspan for Date/Day and a Daily Total column (also rowspan)."""
     df_sorted = df.sort_values(["Date","Project","Task"]).reset_index(drop=True)
     groups = df_sorted.groupby("Date", sort=False)
     rows_html = []
-    total_hours = df_sorted["Hours"].sum()
+    grand_total = df_sorted["Hours"].sum()
 
     for date_val, sub in groups:
         rowspan = len(sub)
-        # first row with Date/Day
+        day_total = float(sub["Hours"].sum())
         first = sub.iloc[0]
+
+        # first row with Date/Day/Daily Total (rowspans)
         rows_html.append(
             f"<tr>"
             f"<td rowspan='{rowspan}' style='white-space:nowrap;font-weight:600'>{date_val}</td>"
@@ -113,9 +111,11 @@ def render_html_table(df: pd.DataFrame) -> str:
             f"<td>{first['Task']}</td>"
             f"<td>{first['Project']}</td>"
             f"<td style='text-align:right'>{first['Hours']:.1f}</td>"
+            f"<td rowspan='{rowspan}' style='text-align:right;font-weight:600;background:#f8fafc'>{day_total:.1f}</td>"
             f"</tr>"
         )
-        # remaining rows for that date
+
+        # remaining task rows for that date
         for _, r in sub.iloc[1:].iterrows():
             rows_html.append(
                 f"<tr>"
@@ -125,12 +125,13 @@ def render_html_table(df: pd.DataFrame) -> str:
                 f"</tr>"
             )
 
-    # TOTAL row
+    # TOTAL row (grand total in last column)
     rows_html.append(
-        f"<tr style='background:#f8fafc;font-weight:700'>"
+        f"<tr style='background:#eef2ff;font-weight:700'>"
         f"<td></td><td style='text-align:right'>TOTAL</td>"
         f"<td></td><td></td>"
-        f"<td style='text-align:right'>{total_hours:.1f}</td>"
+        f"<td></td>"
+        f"<td style='text-align:right'>{grand_total:.1f}</td>"
         f"</tr>"
     )
 
@@ -160,7 +161,8 @@ def render_html_table(df: pd.DataFrame) -> str:
           <th style='width:120px'>Day</th>
           <th>Task</th>
           <th>Project</th>
-          <th style='width:120px; text-align:right'>Hours</th>
+          <th style='width:110px; text-align:right'>Hours</th>
+          <th style='width:130px; text-align:right'>Daily Total</th>
         </tr>
       </thead>
       <tbody>
@@ -222,4 +224,4 @@ k3.metric("Utilization", f"{util:.0f}%")
 csv = detail.to_csv(index=False)
 st.download_button("⬇️ Download CSV", data=csv, file_name=f"activity_{emp_id}_{start}_to_{end}.csv", mime="text/csv")
 
-st.caption("Uses an HTML table to support merged Date/Day cells. Replace the DEMO DATA with your API results later.")
+st.caption("Daily Total shows once per day using real cell rowspans. Replace DEMO DATA with your API later.")
