@@ -1,12 +1,11 @@
 # pages/12_Gantt.py
 # Hierarchical Gantt with Baselines, Planned vs Actual, %Complete, Today line
 # + Dependency lines (FS/SS/FF/SF) and "Collapse to level" control (roll-up by WBS level)
-# Static demo data; wire to APIs later.
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import date, timedelta
+from datetime import date
 
 st.set_page_config(page_title="Gantt (Projects & Activities)", layout="wide")
 
@@ -34,7 +33,6 @@ ACTIVITIES = pd.DataFrame([
     "pct_complete","owner","critical"
 ])
 
-# Dependencies: predecessor_id, successor_id, type, lag_days
 DEPENDENCIES = pd.DataFrame([
     ["A110","A120","FS",0],
     ["A120","A130","FS",0],
@@ -64,20 +62,17 @@ def to_iso(series):
     s = pd.to_datetime(series)
     return s.dt.date.astype("string").where(~s.isna(), None)
 
-def pct(n, d): return (n/d*100) if d else 0.0
-
-# Build link geometry (two-point rows per link for a polyline)
+# Build link geometry; IMPORTANT: return 'label' not 'y'
 def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
     rows = []
     act = df_rows.set_index("id")
-    for i, dep in deps.iterrows():
+    for _, dep in deps.iterrows():
         if dep["pred_id"] not in act.index or dep["succ_id"] not in act.index:
             continue
         pred = act.loc[dep["pred_id"]]
         succ = act.loc[dep["succ_id"]]
         lag = pd.to_timedelta(int(dep["lag_days"]), unit="D")
 
-        # Resolve endpoints by type
         if dep["type"] == "FS":
             x1 = pd.to_datetime(pred["planned_finish"]) + lag
             x2 = pd.to_datetime(succ["planned_start"])
@@ -92,14 +87,12 @@ def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
             x2 = pd.to_datetime(succ["planned_finish"])
 
         link_id = f"{dep['pred_id']}→{dep['succ_id']}({dep['type']})"
-        # two points per link (Vega-Lite line connects them)
-        rows.append({"link_id": link_id, "x": x1, "y": pred["label"]})
-        rows.append({"link_id": link_id, "x": x2, "y": succ["label"]})
-    if not rows:
-        return pd.DataFrame(columns=["link_id","x","y"])
-    out = pd.DataFrame(rows)
-    # JSON-safe
-    out["x"] = to_iso(out["x"])
+        rows.append({"link_id": link_id, "x": x1, "label": pred["label"]})
+        rows.append({"link_id": link_id, "x": x2, "label": succ["label"]})
+    out = pd.DataFrame(rows, columns=["link_id","x","label"])
+    if out.empty:
+        return out
+    out["x"] = to_iso(out["x"])  # JSON-safe
     return out
 
 # ===================== SIDEBAR CONTROLS =====================
@@ -114,14 +107,11 @@ with st.sidebar:
         format_func=lambda pid: proj_map.get(pid, pid)
     )
     baseline_choice = st.radio("Baseline", ["Baseline A", "Baseline B"], index=0)
-    # Collapse / roll-up
     max_level_overall = int(ACTIVITIES["level"].max())
-    collapse_to = st.selectbox("Collapse to level", options=list(range(1, max_level_overall+1)), index=max_level_overall-1,
-                               help="Shows activities at this WBS level and hides deeper children.")
+    collapse_to = st.selectbox("Collapse to level", list(range(1, max_level_overall+1)), index=max_level_overall-1)
     show_parents = st.checkbox("Show summary (parent) activities at/above level", value=True)
     show_dependencies = st.checkbox("Show dependency links (FS/SS/FF/SF)", value=True)
 
-    # Date window
     min_date = pd.to_datetime(ACTIVITIES[["baselineA_start","planned_start","actual_start"]].stack().min())
     max_date = pd.to_datetime(ACTIVITIES[["baselineB_finish","planned_finish","actual_finish"]].stack().max())
     start_date, end_date = st.date_input(
@@ -131,12 +121,8 @@ with st.sidebar:
     )
 
 # ===================== FILTER & PREP =====================
-df = ACTIVITIES[ACTIVITIES["project_id"].isin(selected_projects)].copy()
-
-# Collapse: keep rows whose level <= collapse_to
+df = ACTIVITIES.query("project_id in @selected_projects").copy()
 df = df[df["level"] <= collapse_to]
-
-# Optional: if user hides parents at the collapse level, keep only those that have no children inside the filtered set
 if not show_parents:
     visible_ids = set(df["id"])
     parent_ids = set(df["parent_id"].dropna())
@@ -144,7 +130,6 @@ if not show_parents:
 
 df = compute_fields(df)
 
-# Baseline fields
 if baseline_choice == "Baseline A":
     df["bl_start"] = pd.to_datetime(df["baselineA_start"])
     df["bl_finish"] = pd.to_datetime(df["baselineA_finish"])
@@ -154,7 +139,6 @@ else:
     df["bl_finish"] = pd.to_datetime(df["baselineB_finish"])
     df["finish_var_days"] = df["finish_var_days_B"]
 
-# Clip to window
 win_start = pd.to_datetime(start_date)
 win_end   = pd.to_datetime(end_date)
 
@@ -166,57 +150,70 @@ df["plan_s_clip"], df["plan_f_clip"] = clip_range(df["planned_start"], df["plann
 df["act_s_clip"],  df["act_f_clip"]  = clip_range(df["actual_start"], df["actual_finish"].fillna(win_end))
 df["prog_end_clip"] = pd.to_datetime(df["progress_end"]).clip(upper=win_end)
 
-# Keep rows overlapping window
 overlap = (pd.to_datetime(df["planned_finish"]) >= win_start) & (pd.to_datetime(df["planned_start"]) <= win_end)
 df_vis = df[overlap].sort_values(["project_id","wbs_path"]).reset_index(drop=True)
 
-# Status bucket
 df_vis["bucket"] = np.where(df_vis["critical"], "Critical", df_vis["status"])
-
-# Tooltip fields
 df_vis["Project Name"] = df_vis["project_id"].map(proj_map)
 df_vis["Delay (days)"] = df_vis["finish_var_days"].fillna(0).astype(int)
 
-# JSON-safe date strings for chart fields
+# Convert temporal fields to ISO strings (JSON-safe)
 date_cols = ["bl_start","bl_finish","planned_start","planned_finish","actual_start","actual_finish",
              "plan_s_clip","plan_f_clip","act_s_clip","act_f_clip","progress_end","prog_end_clip"]
 for c in date_cols:
     df_vis[c] = to_iso(df_vis[c])
 
-# Named copies for tooltips
 df_vis["Baseline Start"] = df_vis["bl_start"]; df_vis["Baseline Finish"] = df_vis["bl_finish"]
 df_vis["Planned Start"]  = df_vis["planned_start"]; df_vis["Planned Finish"] = df_vis["planned_finish"]
 df_vis["Actual Start"]   = df_vis["actual_start"];  df_vis["Actual Finish"]  = df_vis["actual_finish"]
 
 today_iso = date.today().isoformat()
+y_sort = list(df_vis["label"])
 
-# Build dependency link segments (after collapse & filter, so links match visible labels)
-links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES) if show_dependencies else pd.DataFrame(columns=["link_id","x","y"])
+# Build dependency lines AFTER filtering; use the same 'label' field
+links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES) if show_dependencies else pd.DataFrame(columns=["link_id","x","label"])
 
 # ===================== CHART (Vega-Lite layered) =====================
 st.subheader("Gantt Chart")
 
-# Sort order for Y
-y_sort = list(df_vis["label"])
-
 spec = {
     "height": 540,
     "layer": [
-        # Baseline thin bar
+        # 1) Dependency lines UNDER everything else
+        *([] if links_df.empty else [
+            {
+                "data": {"name": "links"},
+                "mark": {"type": "line", "stroke": "#6b7280", "strokeWidth": 1.5, "opacity": 0.8},
+                "encoding": {
+                    "x": {"field": "x", "type": "temporal"},
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                    "detail": {"field": "link_id"}
+                }
+            },
+            {
+                "data": {"name": "links"},
+                "mark": {"type": "point", "filled": True, "size": 70, "color": "#6b7280"},
+                "encoding": {
+                    "x": {"field": "x", "type": "temporal"},
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort}
+                }
+            }
+        ]),
+        # 2) Baseline (thin)
         {
             "mark": {"type": "bar", "height": 6, "color": "#9ca3af", "opacity": 0.25},
             "encoding": {
                 "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
-                "x": {"field": "Baseline Start", "type": "temporal"},
+                "x": {"field": "Baseline Start", "type": "temporal", "axis": {"title": None}},
                 "x2": {"field": "Baseline Finish"},
             }
         },
-        # Planned main bar
+        # 3) Planned (main)
         {
             "mark": {"type": "bar", "height": 16},
             "encoding": {
                 "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
-                "x": {"field": "plan_s_clip", "type": "temporal"},
+                "x": {"field": "plan_s_clip", "type": "temporal", "axis": {"title": None}},
                 "x2": {"field": "plan_f_clip"},
                 "color": {"field": "bucket", "type": "nominal", "title": "Status",
                           "scale": {"domain": ["Done","In Progress","Late","Critical"],
@@ -238,50 +235,30 @@ spec = {
                 ]
             }
         },
-        # Progress stripe inside planned
+        # 4) Progress stripe
         {
             "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
             "encoding": {
                 "y": {"field": "label", "type": "ordinal", "sort": y_sort},
-                "x": {"field": "planned_start", "type": "temporal"},
+                "x": {"field": "planned_start", "type": "temporal", "axis": {"title": None}},
                 "x2": {"field": "prog_end_clip"}
             }
         },
-        # Actual thin overlay
+        # 5) Actual thin overlay
         {
             "transform": [{"filter": "datum['Actual Start'] != null"}],
             "mark": {"type": "bar", "height": 8, "color": "#111827"},
             "encoding": {
                 "y": {"field": "label", "type": "ordinal", "sort": y_sort},
-                "x": {"field": "act_s_clip", "type": "temporal"},
+                "x": {"field": "act_s_clip", "type": "temporal", "axis": {"title": None}},
                 "x2": {"field": "act_f_clip"}
             }
         },
-        # Dependency lines (drawn underneath today line for clarity)
-        *([] if links_df.empty else [
-            {
-                "data": {"name": "links"},
-                "mark": {"type": "line", "stroke": "#6b7280", "strokeWidth": 1.5, "opacity": 0.8},
-                "encoding": {
-                    "x": {"field": "x", "type": "temporal"},
-                    "y": {"field": "y", "type": "ordinal", "sort": y_sort},
-                    "detail": {"field": "link_id"}
-                }
-            },
-            {
-                "data": {"name": "links"},
-                "mark": {"type": "point", "filled": True, "size": 70, "color": "#6b7280"},
-                "encoding": {
-                    "x": {"field": "x", "type": "temporal"},
-                    "y": {"field": "y", "type": "ordinal", "sort": y_sort}
-                }
-            }
-        ]),
-        # Today vertical rule
+        # 6) Today line (on top)
         {
-            "data": {"values": [{"today": today_iso}]},
+            "data": {"values": [{"today": date.today().isoformat()}]},
             "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
-            "encoding": {"x": {"field": "today", "type": "temporal"}}
+            "encoding": {"x": {"field": "today", "type": "temporal", "axis": {"title": None}}}
         }
     ],
     "datasets": {"links": links_df.to_dict(orient="records")},
@@ -309,5 +286,3 @@ tbl = df_vis[cols].rename(columns={
     "finish_var_days":"Finish Var (d)","status":"Status","critical":"Critical"
 })
 st.dataframe(tbl.style.format({"% Complete":"{:.0f}","Finish Var (d)":"{:+.0f}"}), use_container_width=True)
-
-st.caption("Static demo. Replace DATA with your API payloads (Activities, Baselines, Actuals, Dependencies). Keep column names to reuse this page unchanged.")
