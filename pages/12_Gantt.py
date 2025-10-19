@@ -185,6 +185,14 @@ with left:
     gob.configure_column("critical", header_name="Critical")
     gob.configure_side_bar()
 
+    c1, c2, c3 = st.columns([1,1,3])
+with c1:
+    if st.button("Expand all"):
+        gob.configure_grid_options(groupDefaultExpanded=-1)
+with c2:
+    if st.button("Collapse all"):
+        gob.configure_grid_options(groupDefaultExpanded=0)
+        
     grid = AgGrid(
         grid_df,
         gridOptions=gob.build(),
