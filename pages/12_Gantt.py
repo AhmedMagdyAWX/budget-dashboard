@@ -1,7 +1,7 @@
 # pages/12_Gantt.py
 # Hierarchical Gantt with Baselines, Planned vs Actual, %Complete, Today line
 # + Dependency lines (FS/SS/FF/SF) and Collapse control
-# Fix: Explicit datasets for all layers so axes don't corrupt.
+# Fix: use Python None (not JSON null) in axis configs; explicit datasets for all layers.
 
 import streamlit as st
 import pandas as pd
@@ -63,10 +63,11 @@ def to_iso(series):
     return s.dt.date.astype("string").where(~s.isna(), None)
 
 def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
+    """Return two rows per link, fields: link_id, x (ISO date), label (y)."""
     rows = []
     act = df_rows.set_index("id")
     for _, dep in deps.iterrows():
-        if dep["pred_id"] not in act.index or dep["succ_id"] not in act.index: 
+        if dep["pred_id"] not in act.index or dep["succ_id"] not in act.index:
             continue
         pred = act.loc[dep["pred_id"]]; succ = act.loc[dep["succ_id"]]
         lag = pd.to_timedelta(int(dep["lag_days"]), unit="D")
@@ -77,7 +78,7 @@ def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
             x1 = pd.to_datetime(pred["planned_start"]) + lag;  x2 = pd.to_datetime(succ["planned_start"])
         elif t == "FF":
             x1 = pd.to_datetime(pred["planned_finish"]) + lag; x2 = pd.to_datetime(succ["planned_finish"])
-        else:
+        else:  # SF
             x1 = pd.to_datetime(pred["planned_start"]) + lag;  x2 = pd.to_datetime(succ["planned_finish"])
         link_id = f"{dep['pred_id']}→{dep['succ_id']}({dep['type']})"
         rows += [{"link_id": link_id, "x": x1, "label": pred["label"]},
@@ -122,6 +123,7 @@ else:
     df["finish_var_days"] = df["finish_var_days_B"]
 
 win_start, win_end = pd.to_datetime(start_date), pd.to_datetime(end_date)
+
 def clip_range(s, f):
     s = pd.to_datetime(s); f = pd.to_datetime(f)
     return (s.clip(lower=win_start), f.clip(upper=win_end))
@@ -149,7 +151,7 @@ df_vis["Actual Start"]   = df_vis["actual_start"];  df_vis["Actual Finish"]  = d
 # Build dependency lines AFTER filtering, in same label space
 links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES) if show_dependencies else pd.DataFrame(columns=["link_id","x","label"])
 
-# ---------------- Chart (explicit datasets on every layer) ----------------
+# ---------------- Chart (explicit datasets for every layer) ----------------
 st.subheader("Gantt Chart")
 y_sort = list(df_vis["label"])
 acts_values  = df_vis.to_dict(orient="records")
@@ -157,10 +159,7 @@ links_values = links_df.to_dict(orient="records")
 
 spec = {
     "height": 540,
-    "datasets": {
-        "acts": acts_values,
-        "links": links_values
-    },
+    "datasets": {"acts": acts_values, "links": links_values},
     "layer": [
         # 1) Dependency lines under everything else
         *([] if not links_values else [
@@ -168,7 +167,7 @@ spec = {
                 "data": {"name": "links"},
                 "mark": {"type": "line", "stroke": "#6b7280", "strokeWidth": 1.5, "opacity": 0.8},
                 "encoding": {
-                    "x": {"field": "x", "type": "temporal", "axis": {"title": null}},
+                    "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
                     "y": {"field": "label", "type": "ordinal", "sort": y_sort},
                     "detail": {"field": "link_id"}
                 }
@@ -177,7 +176,7 @@ spec = {
                 "data": {"name": "links"},
                 "mark": {"type": "point", "filled": True, "size": 70, "color": "#6b7280"},
                 "encoding": {
-                    "x": {"field": "x", "type": "temporal", "axis": {"title": null}},
+                    "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
                     "y": {"field": "label", "type": "ordinal", "sort": y_sort}
                 }
             }
@@ -185,4 +184,86 @@ spec = {
         # 2) Baseline thin bar
         {
             "data": {"name": "acts"},
-            "mark
+            "mark": {"type": "bar", "height": 6, "color": "#9ca3af", "opacity": 0.25},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
+                "x": {"field": "Baseline Start", "type": "temporal", "axis": {"title": None}},
+                "x2": {"field": "Baseline Finish"}
+            }
+        },
+        # 3) Planned main bar
+        {
+            "data": {"name": "acts"},
+            "mark": {"type": "bar", "height": 16},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
+                "x": {"field": "plan_s_clip", "type": "temporal", "axis": {"title": None}},
+                "x2": {"field": "plan_f_clip"},
+                "color": {"field": "bucket", "type": "nominal", "title": "Status",
+                          "scale": {"domain": ["Done","In Progress","Late","Critical"],
+                                    "range":  ["#10b981","#3b82f6","#ef4444","#d97706"]}},
+                "tooltip": [
+                    {"field":"Project Name"},
+                    {"field":"name","title":"Activity"},
+                    {"field":"wbs_path","title":"WBS"},
+                    {"field":"owner","title":"Owner"},
+                    {"field":"pct_complete","title":"% Complete","type":"quantitative"},
+                    {"field":"Planned Start","type":"temporal"},
+                    {"field":"Planned Finish","type":"temporal"},
+                    {"field":"Actual Start","type":"temporal"},
+                    {"field":"Actual Finish","type":"temporal"},
+                    {"field":"Baseline Start","type":"temporal"},
+                    {"field":"Baseline Finish","type":"temporal"},
+                    {"field":"Delay (days)","type":"quantitative"},
+                    {"field":"critical","title":"Critical"}
+                ]
+            }
+        },
+        # 4) Progress stripe
+        {
+            "data": {"name": "acts"},
+            "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                "x": {"field": "planned_start", "type": "temporal", "axis": {"title": None}},
+                "x2": {"field": "prog_end_clip"}
+            }
+        },
+        # 5) Actual thin overlay
+        {
+            "data": {"name": "acts"},
+            "transform": [{"filter": "datum['Actual Start'] != null"}],
+            "mark": {"type": "bar", "height": 8, "color": "#111827"},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                "x": {"field": "act_s_clip", "type": "temporal", "axis": {"title": None}},
+                "x2": {"field": "act_f_clip"}
+            }
+        },
+        # 6) Today line
+        {
+            "data": {"values": [{"today": date.today().isoformat()}]},
+            "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
+            "encoding": {"x": {"field": "today", "type": "temporal", "axis": {"title": None}}}
+        }
+    ]
+}
+
+# Render
+st.vega_lite_chart(spec, use_container_width=True)
+
+# ---- Details table ----
+st.subheader("Activities (filtered)")
+cols = ["project_id","wbs_path","name","owner","pct_complete","planned_start","planned_finish",
+        "actual_start","actual_finish","baselineA_finish","baselineB_finish",
+        "finish_var_days","status","critical"]
+st.dataframe(
+    df_vis[cols].rename(columns={
+        "project_id":"Project","wbs_path":"WBS","name":"Activity","owner":"Owner",
+        "pct_complete":"% Complete","planned_start":"Plan Start","planned_finish":"Plan Finish",
+        "actual_start":"Act Start","actual_finish":"Act Finish",
+        "baselineA_finish":"BL A Finish","baselineB_finish":"BL B Finish",
+        "finish_var_days":"Finish Var (d)","status":"Status","critical":"Critical"
+    }).style.format({"% Complete":"{:.0f}","Finish Var (d)":"{:+.0f}"}),
+    use_container_width=True
+)
