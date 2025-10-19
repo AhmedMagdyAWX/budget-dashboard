@@ -21,43 +21,43 @@ PROJECTS = pd.DataFrame([
 ACTIVITIES = pd.DataFrame([
     # WBS Level 1 (summary)
     ["A100", "PRJ-001", "Phase 1", "1", 1, None,
-     date(2025,1,10), date(2025,3,15), date(2025,1,15), date(2025,3,20),
-     date(2025,1,12), date(2025,3,22), date(2025,1,12), date(2025,3,22), 100, "Amr", False],
+     date(2025, 1, 10), date(2025, 3, 15), date(2025, 1, 15), date(2025, 3, 20),
+     date(2025, 1, 12), date(2025, 3, 22), date(2025, 1, 12), date(2025, 3, 22), 100, "Amr", False],
 
     # Level 2
     ["A110", "PRJ-001", "Planning", "1.1", 2, "A100",
-     date(2025,1,10), date(2025,2,01), date(2025,1,12), date(2025,2,5),
-     date(2025,1,12), date(2025,2,3),  date(2025,1,12), date(2025,2,3), 100, "Amr", False],
+     date(2025, 1, 10), date(2025, 2, 1), date(2025, 1, 12), date(2025, 2, 5),
+     date(2025, 1, 12), date(2025, 2, 3),  date(2025, 1, 12), date(2025, 2, 3), 100, "Amr", False],
     ["A120", "PRJ-001", "Model Setup", "1.2", 2, "A100",
-     date(2025,2,1), date(2025,2,25), date(2025,2,5), date(2025,2,28),
-     date(2025,2,3), date(2025,2,27),  date(2025,2,4), date(2025,2,28), 100, "Lina", True],
+     date(2025, 2, 1), date(2025, 2, 25), date(2025, 2, 5), date(2025, 2, 28),
+     date(2025, 2, 3), date(2025, 2, 27),  date(2025, 2, 4), date(2025, 2, 28), 100, "Lina", True],
     ["A130", "PRJ-001", "Client Review 1", "1.3", 2, "A100",
-     date(2025,2,25), date(2025,3,10), date(2025,2,28), date(2025,3,12),
-     date(2025,2,27), date(2025,3,12),  date(2025,2,27), date(2025,3,14), 100, "Amr", False],
+     date(2025, 2, 25), date(2025, 3, 10), date(2025, 2, 28), date(2025, 3, 12),
+     date(2025, 2, 27), date(2025, 3, 12),  date(2025, 2, 27), date(2025, 3, 14), 100, "Amr", False],
 
     # Level 1 (summary)
     ["B100", "PRJ-001", "Phase 2", "2", 1, None,
-     date(2025,3,16), date(2025,7,30), date(2025,3,20), date(2025,8,10),
-     date(2025,3,18), date(2025,8,5),  date(2025,3,18), None,             60, "Lina", True],
+     date(2025, 3, 16), date(2025, 7, 30), date(2025, 3, 20), date(2025, 8, 10),
+     date(2025, 3, 18), date(2025, 8, 5),  date(2025, 3, 18), None,             60, "Lina", True],
 
     # Level 2 and Level 3
     ["B110", "PRJ-001", "Field Scanning", "2.1", 2, "B100",
-     date(2025,3,16), date(2025,5,10), date(2025,3,22), date(2025,5,20),
-     date(2025,3,18), date(2025,5,15), date(2025,3,18), date(2025,5,18), 100, "Omar", True],
+     date(2025, 3, 16), date(2025, 5, 10), date(2025, 3, 22), date(2025, 5, 20),
+     date(2025, 3, 18), date(2025, 5, 15), date(2025, 3, 18), date(2025, 5, 18), 100, "Omar", True],
     ["B120", "PRJ-001", "Modeling", "2.2", 2, "B100",
-     date(2025,5,12), date(2025,7,1), date(2025,5,22), date(2025,7,10),
-     date(2025,5,20), date(2025,7,5),  date(2025,5,21), None,             55, "Lina", True],
+     date(2025, 5, 12), date(2025, 7, 1), date(2025, 5, 22), date(2025, 7, 10),
+     date(2025, 5, 20), date(2025, 7, 5),  date(2025, 5, 21), None,             55, "Lina", True],
     ["B121", "PRJ-001", "Structural Frames", "2.2.1", 3, "B120",
-     date(2025,5,12), date(2025,6,10), date(2025,5,24), date(2025,6,18),
-     date(2025,5,20), date(2025,6,12), date(2025,5,21), date(2025,6,15), 100, "Lina", True],
+     date(2025, 5, 12), date(2025, 6, 10), date(2025, 5, 24), date(2025, 6, 18),
+     date(2025, 5, 20), date(2025, 6, 12), date(2025, 5, 21), date(2025, 6, 15), 100, "Lina", True],
     ["B122", "PRJ-001", "MEP Coordination", "2.2.2", 3, "B120",
-     date(2025,6,11), date(2025,7,1), date(2025,6,20), date(2025,7,10),
-     date(2025,6,13), date(2025,7,5),  date(2025,6,14), None,             30, "Omar", True],
+     date(2025, 6, 11), date(2025, 7, 1), date(2025, 6, 20), date(2025, 7, 10),
+     date(2025, 6, 13), date(2025, 7, 5),  date(2025, 6, 14), None,             30, "Omar", True],
 
     # Another project
     ["C100", "PRJ-002", "Kickoff & Setup", "1", 1, None,
-     date(2025,4,1), date(2025,4,20), date(2025,4,3), date(2025,4,22),
-     date(2025,4,4), date(2025,4,24), date(2025,4,4), date(2025,4,24), 100, "Sara", False],
+     date(2025, 4, 1), date(2025, 4, 20), date(2025, 4, 3), date(2025, 4, 22),
+     date(2025, 4, 4), date(2025, 4, 24), date(2025, 4, 4), date(2025, 4, 24), 100, "Sara", False],
 ], columns=[
     "id","project_id","name","wbs_path","level","parent_id",
     "baselineA_start","baselineA_finish","baselineB_start","baselineB_finish",
@@ -68,9 +68,6 @@ ACTIVITIES = pd.DataFrame([
 # ===================== HELPERS =====================
 def nbspace(n):  # visual indent in labels
     return "\u00A0" * (2 * max(int(n), 0))
-
-def safe_dt(x):
-    return pd.to_datetime(x) if pd.notna(x) else pd.NaT
 
 def compute_fields(df):
     d = df.copy()
@@ -85,7 +82,7 @@ def compute_fields(df):
     # Delays (finish variance)
     d["finish_var_days_A"] = (pd.to_datetime(d["planned_finish"]) - pd.to_datetime(d["baselineA_finish"])).dt.days
     d["finish_var_days_B"] = (pd.to_datetime(d["planned_finish"]) - pd.to_datetime(d["baselineB_finish"])).dt.days
-    # Status
+    # Status (late if planned finished before today but <100%)
     today = pd.to_datetime(date.today())
     late = (pd.to_datetime(d["planned_finish"]) < today) & (d["pct_complete"] < 100)
     d["status"] = np.where(late, "Late", np.where(d["pct_complete"]>=100, "Done", "In Progress"))
@@ -121,7 +118,6 @@ with st.sidebar:
 df = ACTIVITIES[ACTIVITIES["project_id"].isin(selected_projects)].copy()
 df = df[df["level"] <= max_level]
 if not show_parents:
-    # Heuristic: summary tasks often have no actual_start or pct_complete aggregated—filter by having children
     child_ids = set(df["parent_id"].dropna())
     df = df[~df["id"].isin(child_ids)]
 
@@ -145,7 +141,8 @@ def clip_range(s, f):
     return (s.clip(lower=win_start), f.clip(upper=win_end))
 df["plan_s_clip"], df["plan_f_clip"] = clip_range(df["planned_start"], df["planned_finish"])
 df["act_s_clip"],  df["act_f_clip"]  = clip_range(df["actual_start"], df["actual_finish"].fillna(win_end))
-df["prog_end_clip"] = df[["progress_end"]].clip(upper=win_end)
+# progress end clip as series
+df["prog_end_clip"] = pd.to_datetime(df["progress_end"]).clip(upper=win_end)
 
 # Order rows by WBS path (string sort keeps 1,1.1,1.2,2,2.1 etc.)
 df = df.sort_values(["project_id","wbs_path"]).reset_index(drop=True)
@@ -153,7 +150,7 @@ df = df.sort_values(["project_id","wbs_path"]).reset_index(drop=True)
 # ===================== CHART (Vega-Lite layered) =====================
 st.subheader("Gantt Chart")
 
-# Build a dataset just with rows inside the window (any overlap)
+# Show rows that overlap the window
 mask_overlap = (pd.to_datetime(df["planned_finish"]) >= win_start) & (pd.to_datetime(df["planned_start"]) <= win_end)
 df_vis = df[mask_overlap].copy()
 
@@ -180,10 +177,8 @@ today = pd.to_datetime(date.today())
 spec = {
     "data": {"values": df_vis.to_dict(orient="records")},
     "height": 520,
-    "mark": "bar",
-    "encoding": {},
     "layer": [
-        # Baseline (thin, gray outline)
+        # Baseline (thin, gray)
         {
             "mark": {"type": "bar", "height": 6, "color": "#9ca3af", "opacity": 0.25},
             "encoding": {
@@ -192,7 +187,7 @@ spec = {
                 "x2": {"field": "Baseline Finish"},
             }
         },
-        # Planned (main bar)
+        # Planned (main)
         {
             "mark": {"type": "bar", "height": 16},
             "encoding": {
@@ -206,76 +201,4 @@ spec = {
                 },
                 "tooltip": [
                     {"field":"Project Name", "type":"nominal"},
-                    {"field":"name", "title":"Activity"},
-                    {"field":"wbs_path", "title":"WBS"},
-                    {"field":"owner", "title":"Owner"},
-                    {"field":"pct_complete", "title":"% Complete", "type":"quantitative"},
-                    {"field":"Planned Start", "type":"temporal"},
-                    {"field":"Planned Finish", "type":"temporal"},
-                    {"field":"Actual Start", "type":"temporal"},
-                    {"field":"Actual Finish", "type":"temporal"},
-                    {"field":"Baseline Start", "type":"temporal"},
-                    {"field":"Baseline Finish", "type":"temporal"},
-                    {"field":"Delay (days)", "type":"quantitative"},
-                    {"field":"critical", "title":"Critical", "type":"nominal"}
-                ]
-            }
-        },
-        # Progress stripe inside planned (up to computed progress_end)
-        {
-            "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": df_vis["label"].tolist()},
-                "x": {"field": "planned_start", "type": "temporal"},
-                "x2": {"field": "prog_end_clip"}
-            }
-        },
-        # Actual bar (thin dark overlay, if actual started)
-        {
-            "transform": [{"filter": "datum['Actual Start'] != null"}],
-            "mark": {"type": "bar", "height": 8, "color": "#111827"},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": df_vis["label"].tolist()},
-                "x": {"field": "act_s_clip", "type": "temporal"},
-                "x2": {"field": "act_f_clip"}
-            }
-        },
-        # Today line
-        {
-            "data": {"values": [{"today": today}]},
-            "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
-            "encoding": {"x": {"field": "today", "type": "temporal"}}
-        }
-    ],
-    "resolve": {"scale": {"y": "independent"}},
-}
-
-st.vega_lite_chart(spec, use_container_width=True)
-
-# ===================== LEGEND / CONTROLS INFO =====================
-left, right = st.columns([2,1])
-with left:
-    st.caption("Legend — Planned: colored bar • Actual: dark thin overlay • Baseline: light thin bar • Progress: cyan stripe inside planned • Today: red dashed line.")
-with right:
-    st.metric("Activities shown", len(df_vis))
-
-# ===================== DETAILS TABLE =====================
-st.subheader("Activities (filtered)")
-show_cols = [
-    "project_id","wbs_path","name","owner","pct_complete",
-    "planned_start","planned_finish","actual_start","actual_finish",
-    "baselineA_finish","baselineB_finish","finish_var_days","status","critical"
-]
-tbl = df_vis[show_cols].rename(columns={
-    "project_id":"Project","wbs_path":"WBS","name":"Activity","owner":"Owner","pct_complete":"% Complete",
-    "planned_start":"Plan Start","planned_finish":"Plan Finish",
-    "actual_start":"Act Start","actual_finish":"Act Finish",
-    "baselineA_finish":"BL A Finish","baselineB_finish":"BL B Finish",
-    "finish_var_days":"Finish Var (d)","status":"Status","critical":"Critical"
-})
-st.dataframe(
-    tbl.style.format({"% Complete":"{:.0f}","Finish Var (d)":"{:+.0f}"}),
-    use_container_width=True
-)
-
-st.caption("Static demo. Replace DATA with your API payloads (Activities, Baselines, Actuals). Keep column names where possible to reuse this page unchanged.")
+                    {"field":
