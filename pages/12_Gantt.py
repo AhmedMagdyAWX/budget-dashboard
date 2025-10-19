@@ -7,8 +7,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import date
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
-from st_aggrid import JsCode
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 st.set_page_config(page_title="Gantt (Projects & Activities)", layout="wide")
 
@@ -65,7 +64,6 @@ def to_iso(series):
     return s.dt.date.astype("string").where(~s.isna(), None)
 
 def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
-    """Return two rows per link, fields: link_id, x (ISO date), label (y)."""
     rows = []
     act = df_rows.set_index("id")
     for _, dep in deps.iterrows():
@@ -80,7 +78,7 @@ def make_links(df_rows: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
             x1 = pd.to_datetime(pred["planned_start"]) + lag;  x2 = pd.to_datetime(succ["planned_start"])
         elif t == "FF":
             x1 = pd.to_datetime(pred["planned_finish"]) + lag; x2 = pd.to_datetime(succ["planned_finish"])
-        else:  # SF
+        else:
             x1 = pd.to_datetime(pred["planned_start"]) + lag;  x2 = pd.to_datetime(succ["planned_finish"])
         link_id = f"{dep['pred_id']}→{dep['succ_id']}({dep['type']})"
         rows += [{"link_id": link_id, "x": x1, "label": pred["label"]},
@@ -99,7 +97,6 @@ with st.sidebar:
                                        default=PROJECTS["project_id"].tolist(),
                                        format_func=lambda pid: proj_map.get(pid, pid))
     baseline_choice = st.radio("Baseline", ["Baseline A","Baseline B"], index=0)
-    # Window
     min_date = pd.to_datetime(ACTIVITIES[["baselineA_start","planned_start","actual_start"]].stack().min())
     max_date = pd.to_datetime(ACTIVITIES[["baselineB_finish","planned_finish","actual_finish"]].stack().max())
     start_date, end_date = st.date_input("Window", value=(min_date.date(), max_date.date()),
@@ -138,53 +135,67 @@ for c in ["bl_start","bl_finish","planned_start","planned_finish","actual_start"
           "plan_s_clip","plan_f_clip","act_s_clip","act_f_clip","progress_end","prog_end_clip"]:
     df_all[c] = to_iso(df_all[c])
 
-# Build a data path for AG-Grid tree from the WBS (e.g., "1.2.1") + names
-def wbs_to_path(row):
-    parts = row["wbs_path"].split(".")
+# -------- Build tree path with real parent names (not "1", "2") --------
+name_by_wbs = dict(zip(df_all["wbs_path"], df_all["name"]))
+def wbs_name_path(wbs, leaf_name):
+    parts = wbs.split(".")
     labels = []
-    # Walk the WBS and use the names of each ancestor if available; fallback to parts
-    # For demo, we simply use the running WBS prefixes (1 -> '1', 1.2 -> '1.2', etc.)
-    acc = []
-    for p in parts:
-        acc.append(p)
-        labels.append(".".join(acc))
-    # Replace the last with Activity name for nicer leaf label
-    labels[-1] = row["name"]
+    for i in range(1, len(parts)+1):
+        prefix = ".".join(parts[:i])
+        label = name_by_wbs.get(prefix, prefix)
+        labels.append(label)
+    labels[-1] = leaf_name  # ensure leaf uses its own name (not prefix fallback)
     return labels
 
-df_all["path"] = df_all.apply(wbs_to_path, axis=1)
+df_all["path"] = df_all.apply(lambda r: wbs_name_path(r["wbs_path"], r["name"]), axis=1)
 
 # ---------------- Layout: Grid (left) + Chart (right) ----------------
 left, right = st.columns([0.46, 0.54], gap="large")
 
 with left:
-    st.subheader("Work Breakdown (expand/collapse)")
+    st.subheader("Work Breakdown (expand/collapse) ↔")
     depth = st.slider("Expand depth", 0, int(df_all["level"].max()), value=int(df_all["level"].max()))
+    q = st.text_input("Search", "", placeholder="Type to filter… (name, owner, status)")
     st.caption("Tip: expand/collapse nodes with the arrows; select any set of rows to filter the Gantt.")
 
-    # Build AG-Grid tree options
-    grid_df = df_all[["id","project_id","wbs_path","level","owner","pct_complete","status","critical","path"]].copy()
+    grid_df = df_all[["id","path","wbs_path","owner","pct_complete","status","critical"]].copy()
+
     gob = GridOptionsBuilder.from_dataframe(grid_df)
     gob.configure_pagination(enabled=False)
     gob.configure_selection(selection_mode="multiple", use_checkbox=True)
     gob.configure_grid_options(
-    treeData=True,
-    animateRows=True,
-    groupDefaultExpanded=depth if depth > 0 else 0,  # -1 would expand all
-    getDataPath=JsCode("function (data) { return data.path; }"),
-    autoGroupColumnDef={
-        "headerName": "Activity",
-        "minWidth": 260,
-        "cellRendererParams": {"suppressCount": True},
-    },
+        treeData=True,
+        animateRows=True,
+        groupDefaultExpanded=(depth if depth > 0 else 0),
+        getDataPath=JsCode("function (data) { return data.path; }"),
+        groupSelectsChildren=True,
+        groupSelectsFiltered=True,
+        suppressRowClickSelection=True,
+        autoGroupColumnDef={
+            "headerName": "Activity",
+            "minWidth": 260,
+            "cellRendererParams": {"suppressCount": True},
+        }
     )
-    # Hide technical columns except via tooltip
+    # Tidy columns
     gob.configure_column("path", hide=True)
     gob.configure_column("wbs_path", header_name="WBS", width=100)
-    gob.configure_column("pct_complete", header_name="% Complete", type=["numericColumn"], valueFormatter="Math.round(value)")
-    gob.configure_column("critical", header_name="Critical")
-    gob.configure_side_bar()
-        
+    gob.configure_column("owner", header_name="Owner", width=110)
+    gob.configure_column("pct_complete", header_name="% Complete", type=["numericColumn"], valueFormatter="Math.round(value)", width=120)
+    gob.configure_column("status", header_name="Status", width=110)
+    gob.configure_column("critical", header_name="Critical", width=95)
+    gob.configure_side_bar(False)
+    if q:
+        gob.configure_grid_options(quickFilterText=q)
+
+    c1, c2, _ = st.columns([1,1,3])
+    with c1:
+        if st.button("Expand all"):
+            gob.configure_grid_options(groupDefaultExpanded=-1)
+    with c2:
+        if st.button("Collapse all"):
+            gob.configure_grid_options(groupDefaultExpanded=0)
+
     grid = AgGrid(
         grid_df,
         gridOptions=gob.build(),
@@ -196,16 +207,17 @@ with left:
         key="wbs_tree",
     )
 
-    selected_ids = {r["id"] for r in grid["selected_rows"]} if grid.get("selected_rows") else set()
+    # Selected rows -> include descendants (by wbs prefix)
+    selected = grid.get("selected_rows") or []
+    selected_ids = {r["id"] for r in selected}
+    selected_wbs = {r["wbs_path"] for r in selected}
+    if selected_wbs:
+        descendants = df_all[df_all["wbs_path"].apply(lambda w: any(w.startswith(pfx + ".") or w == pfx for pfx in selected_wbs))]["id"]
+        selected_ids.update(descendants)
 
 with right:
-    # If user selected rows, chart follows selection; otherwise show all rows in the window
-    if selected_ids:
-        df_vis = df_all[df_all["id"].isin(selected_ids)].copy()
-    else:
-        df_vis = df_all.copy()
-
-    # Dependency lines are rebuilt based on visible rows
+    # Chart follows selection; if nothing selected, show everything
+    df_vis = df_all[df_all["id"].isin(selected_ids)].copy() if selected_ids else df_all.copy()
     links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES)
 
     st.subheader("Gantt Chart")
@@ -303,4 +315,4 @@ with right:
 
     st.vega_lite_chart(spec, use_container_width=True)
 
-st.caption("Grid drives the Gantt: expand/collapse nodes; select any rows to filter the chart. If nothing is selected, the chart shows everything in the window. Static demo; wire to your APIs later.")
+st.caption("Use the grid to expand/collapse and select nodes. Selecting a parent shows all its descendants in the Gantt. Search filters the tree live. Static demo; wire to your APIs later.")
