@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from datetime import date
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from st_aggrid import JsCode
 
 st.set_page_config(page_title="Gantt (Projects & Activities)", layout="wide")
 
@@ -167,15 +168,15 @@ with left:
     gob.configure_pagination(enabled=False)
     gob.configure_selection(selection_mode="multiple", use_checkbox=True)
     gob.configure_grid_options(
-        treeData=True,
-        animateRows=True,
-        groupDefaultExpanded=depth if depth > 0 else 0,
-        getDataPath="function(data) { return data.path; }",
-        autoGroupColumnDef={
-            "headerName": "Activity",
-            "minWidth": 260,
-            "cellRendererParams": {"suppressCount": True},
-        }
+    treeData=True,
+    animateRows=True,
+    groupDefaultExpanded=depth if depth > 0 else 0,  # -1 would expand all
+    getDataPath=JsCode("function (data) { return data.path; }"),
+    autoGroupColumnDef={
+        "headerName": "Activity",
+        "minWidth": 260,
+        "cellRendererParams": {"suppressCount": True},
+    },
     )
     # Hide technical columns except via tooltip
     gob.configure_column("path", hide=True)
