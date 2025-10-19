@@ -1,12 +1,13 @@
 # pages/12_Gantt.py
-# Hierarchical Gantt with Baselines, Planned vs Actual, %Complete, Today line
-# + Dependency lines (FS/SS/FF/SF) and Collapse control
-# Fix: use Python None (not JSON null) in axis configs; explicit datasets for all layers.
+# Gantt with Baselines, Planned vs Actual, %Complete, Today line
+# + AG-Grid Tree (true expand/collapse) that drives the chart via selection
+# Requires: streamlit-aggrid==0.3.4.post3
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import date
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 st.set_page_config(page_title="Gantt (Projects & Activities)", layout="wide")
 
@@ -97,173 +98,208 @@ with st.sidebar:
                                        default=PROJECTS["project_id"].tolist(),
                                        format_func=lambda pid: proj_map.get(pid, pid))
     baseline_choice = st.radio("Baseline", ["Baseline A","Baseline B"], index=0)
-    max_level_overall = int(ACTIVITIES["level"].max())
-    collapse_to = st.selectbox("Collapse to level", list(range(1, max_level_overall+1)), index=max_level_overall-1)
-    show_parents = st.checkbox("Show summary (parent) activities at/above level", value=True)
-    show_dependencies = st.checkbox("Show dependency links (FS/SS/FF/SF)", value=True)
+    # Window
     min_date = pd.to_datetime(ACTIVITIES[["baselineA_start","planned_start","actual_start"]].stack().min())
     max_date = pd.to_datetime(ACTIVITIES[["baselineB_finish","planned_finish","actual_finish"]].stack().max())
     start_date, end_date = st.date_input("Window", value=(min_date.date(), max_date.date()),
                                          min_value=min_date.date(), max_value=max_date.date())
 
 # ---------------- Filter & Prep ----------------
-df = ACTIVITIES.query("project_id in @selected_projects").copy()
-df = df[df["level"] <= collapse_to]
-if not show_parents:
-    visible_ids = set(df["id"]); parent_ids = set(df["parent_id"].dropna())
-    df = df[~df["id"].isin(parent_ids & visible_ids)]
+df_all = ACTIVITIES.query("project_id in @selected_projects").copy()
+df_all = compute_fields(df_all)
 
-df = compute_fields(df)
-
+# Baseline fields
 if baseline_choice == "Baseline A":
-    df["bl_start"] = pd.to_datetime(df["baselineA_start"]); df["bl_finish"] = pd.to_datetime(df["baselineA_finish"])
-    df["finish_var_days"] = df["finish_var_days_A"]
+    df_all["bl_start"] = pd.to_datetime(df_all["baselineA_start"]); df_all["bl_finish"] = pd.to_datetime(df_all["baselineA_finish"])
+    df_all["finish_var_days"] = df_all["finish_var_days_A"]
 else:
-    df["bl_start"] = pd.to_datetime(df["baselineB_start"]); df["bl_finish"] = pd.to_datetime(df["baselineB_finish"])
-    df["finish_var_days"] = df["finish_var_days_B"]
+    df_all["bl_start"] = pd.to_datetime(df_all["baselineB_start"]); df_all["bl_finish"] = pd.to_datetime(df_all["baselineB_finish"])
+    df_all["finish_var_days"] = df_all["finish_var_days_B"]
 
+# Clip to window
 win_start, win_end = pd.to_datetime(start_date), pd.to_datetime(end_date)
-
 def clip_range(s, f):
     s = pd.to_datetime(s); f = pd.to_datetime(f)
     return (s.clip(lower=win_start), f.clip(upper=win_end))
+df_all["plan_s_clip"], df_all["plan_f_clip"] = clip_range(df_all["planned_start"], df_all["planned_finish"])
+df_all["act_s_clip"],  df_all["act_f_clip"]  = clip_range(df_all["actual_start"], df_all["actual_finish"].fillna(win_end))
+df_all["prog_end_clip"] = pd.to_datetime(df_all["progress_end"]).clip(upper=win_end)
 
-df["plan_s_clip"], df["plan_f_clip"] = clip_range(df["planned_start"], df["planned_finish"])
-df["act_s_clip"],  df["act_f_clip"]  = clip_range(df["actual_start"], df["actual_finish"].fillna(win_end))
-df["prog_end_clip"] = pd.to_datetime(df["progress_end"]).clip(upper=win_end)
+# Overlap window & sort
+overlap = (pd.to_datetime(df_all["planned_finish"]) >= win_start) & (pd.to_datetime(df_all["planned_start"]) <= win_end)
+df_all = df_all[overlap].sort_values(["project_id","wbs_path"]).reset_index(drop=True)
+df_all["bucket"] = np.where(df_all["critical"], "Critical", df_all["status"])
+df_all["Project Name"] = df_all["project_id"].map(proj_map)
+df_all["Delay (days)"] = df_all["finish_var_days"].fillna(0).astype(int)
 
-overlap = (pd.to_datetime(df["planned_finish"]) >= win_start) & (pd.to_datetime(df["planned_start"]) <= win_end)
-df_vis = df[overlap].sort_values(["project_id","wbs_path"]).reset_index(drop=True)
-
-df_vis["bucket"] = np.where(df_vis["critical"], "Critical", df_vis["status"])
-df_vis["Project Name"] = df_vis["project_id"].map(proj_map)
-df_vis["Delay (days)"] = df_vis["finish_var_days"].fillna(0).astype(int)
-
-# Convert temporal fields to ISO strings (JSON-safe)
+# ISO date strings for JSON
 for c in ["bl_start","bl_finish","planned_start","planned_finish","actual_start","actual_finish",
           "plan_s_clip","plan_f_clip","act_s_clip","act_f_clip","progress_end","prog_end_clip"]:
-    df_vis[c] = to_iso(df_vis[c])
+    df_all[c] = to_iso(df_all[c])
 
-df_vis["Baseline Start"] = df_vis["bl_start"]; df_vis["Baseline Finish"] = df_vis["bl_finish"]
-df_vis["Planned Start"]  = df_vis["planned_start"]; df_vis["Planned Finish"] = df_vis["planned_finish"]
-df_vis["Actual Start"]   = df_vis["actual_start"];  df_vis["Actual Finish"]  = df_vis["actual_finish"]
+# Build a data path for AG-Grid tree from the WBS (e.g., "1.2.1") + names
+def wbs_to_path(row):
+    parts = row["wbs_path"].split(".")
+    labels = []
+    # Walk the WBS and use the names of each ancestor if available; fallback to parts
+    # For demo, we simply use the running WBS prefixes (1 -> '1', 1.2 -> '1.2', etc.)
+    acc = []
+    for p in parts:
+        acc.append(p)
+        labels.append(".".join(acc))
+    # Replace the last with Activity name for nicer leaf label
+    labels[-1] = row["name"]
+    return labels
 
-# Build dependency lines AFTER filtering, in same label space
-links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES) if show_dependencies else pd.DataFrame(columns=["link_id","x","label"])
+df_all["path"] = df_all.apply(wbs_to_path, axis=1)
 
-# ---------------- Chart (explicit datasets for every layer) ----------------
-st.subheader("Gantt Chart")
-y_sort = list(df_vis["label"])
-acts_values  = df_vis.to_dict(orient="records")
-links_values = links_df.to_dict(orient="records")
+# ---------------- Layout: Grid (left) + Chart (right) ----------------
+left, right = st.columns([0.46, 0.54], gap="large")
 
-spec = {
-    "height": 540,
-    "datasets": {"acts": acts_values, "links": links_values},
-    "layer": [
-        # 1) Dependency lines under everything else
-        *([] if not links_values else [
+with left:
+    st.subheader("Work Breakdown (expand/collapse)")
+    depth = st.slider("Expand depth", 0, int(df_all["level"].max()), value=int(df_all["level"].max()))
+    st.caption("Tip: expand/collapse nodes with the arrows; select any set of rows to filter the Gantt.")
+
+    # Build AG-Grid tree options
+    grid_df = df_all[["id","project_id","wbs_path","level","owner","pct_complete","status","critical","path"]].copy()
+    gob = GridOptionsBuilder.from_dataframe(grid_df)
+    gob.configure_pagination(enabled=False)
+    gob.configure_selection(selection_mode="multiple", use_checkbox=True)
+    gob.configure_grid_options(
+        treeData=True,
+        animateRows=True,
+        groupDefaultExpanded=depth if depth > 0 else 0,
+        getDataPath="function(data) { return data.path; }",
+        autoGroupColumnDef={
+            "headerName": "Activity",
+            "minWidth": 260,
+            "cellRendererParams": {"suppressCount": True},
+        }
+    )
+    # Hide technical columns except via tooltip
+    gob.configure_column("path", hide=True)
+    gob.configure_column("wbs_path", header_name="WBS", width=100)
+    gob.configure_column("pct_complete", header_name="% Complete", type=["numericColumn"], valueFormatter="Math.round(value)")
+    gob.configure_column("critical", header_name="Critical")
+    gob.configure_side_bar()
+
+    grid = AgGrid(
+        grid_df,
+        gridOptions=gob.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED,
+        allow_unsafe_jscode=True,
+        height=520,
+        theme="alpine",
+        fit_columns_on_grid_load=True,
+        key="wbs_tree",
+    )
+
+    selected_ids = {r["id"] for r in grid["selected_rows"]} if grid.get("selected_rows") else set()
+
+with right:
+    # If user selected rows, chart follows selection; otherwise show all rows in the window
+    if selected_ids:
+        df_vis = df_all[df_all["id"].isin(selected_ids)].copy()
+    else:
+        df_vis = df_all.copy()
+
+    # Dependency lines are rebuilt based on visible rows
+    links_df = make_links(df_vis[["id","label","planned_start","planned_finish"]], DEPENDENCIES)
+
+    st.subheader("Gantt Chart")
+
+    y_sort = list(df_vis["label"])
+    acts_values  = df_vis.to_dict(orient="records")
+    links_values = links_df.to_dict(orient="records")
+    today_iso = date.today().isoformat()
+
+    spec = {
+        "height": 540,
+        "datasets": {"acts": acts_values, "links": links_values},
+        "layer": [
+            *([] if not links_values else [
+                {
+                    "data": {"name": "links"},
+                    "mark": {"type": "line", "stroke": "#6b7280", "strokeWidth": 1.5, "opacity": 0.8},
+                    "encoding": {
+                        "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
+                        "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                        "detail": {"field": "link_id"}
+                    }
+                },
+                {
+                    "data": {"name": "links"},
+                    "mark": {"type": "point", "filled": True, "size": 70, "color": "#6b7280"},
+                    "encoding": {
+                        "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
+                        "y": {"field": "label", "type": "ordinal", "sort": y_sort}
+                    }
+                }
+            ]),
             {
-                "data": {"name": "links"},
-                "mark": {"type": "line", "stroke": "#6b7280", "strokeWidth": 1.5, "opacity": 0.8},
+                "data": {"name": "acts"},
+                "mark": {"type": "bar", "height": 6, "color": "#9ca3af", "opacity": 0.25},
                 "encoding": {
-                    "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
-                    "y": {"field": "label", "type": "ordinal", "sort": y_sort},
-                    "detail": {"field": "link_id"}
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
+                    "x": {"field": "bl_start", "type": "temporal", "axis": {"title": None}},
+                    "x2": {"field": "bl_finish"}
                 }
             },
             {
-                "data": {"name": "links"},
-                "mark": {"type": "point", "filled": True, "size": 70, "color": "#6b7280"},
+                "data": {"name": "acts"},
+                "mark": {"type": "bar", "height": 16},
                 "encoding": {
-                    "x": {"field": "x", "type": "temporal", "axis": {"title": None}},
-                    "y": {"field": "label", "type": "ordinal", "sort": y_sort}
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
+                    "x": {"field": "plan_s_clip", "type": "temporal", "axis": {"title": None}},
+                    "x2": {"field": "plan_f_clip"},
+                    "color": {"field": "bucket", "type": "nominal", "title": "Status",
+                              "scale": {"domain": ["Done","In Progress","Late","Critical"],
+                                        "range":  ["#10b981","#3b82f6","#ef4444","#d97706"]}},
+                    "tooltip": [
+                        {"field":"Project Name"},
+                        {"field":"name","title":"Activity"},
+                        {"field":"wbs_path","title":"WBS"},
+                        {"field":"owner","title":"Owner"},
+                        {"field":"pct_complete","title":"% Complete","type":"quantitative"},
+                        {"field":"planned_start","title":"Planned Start","type":"temporal"},
+                        {"field":"planned_finish","title":"Planned Finish","type":"temporal"},
+                        {"field":"actual_start","title":"Actual Start","type":"temporal"},
+                        {"field":"actual_finish","title":"Actual Finish","type":"temporal"},
+                        {"field":"bl_start","title":"Baseline Start","type":"temporal"},
+                        {"field":"bl_finish","title":"Baseline Finish","type":"temporal"},
+                        {"field":"Delay (days)","type":"quantitative"},
+                        {"field":"critical","title":"Critical"}
+                    ]
                 }
+            },
+            {
+                "data": {"name": "acts"},
+                "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
+                "encoding": {
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                    "x": {"field": "planned_start", "type": "temporal", "axis": {"title": None}},
+                    "x2": {"field": "prog_end_clip"}
+                }
+            },
+            {
+                "data": {"name": "acts"},
+                "transform": [{"filter": "datum['actual_start'] != null"}],
+                "mark": {"type": "bar", "height": 8, "color": "#111827"},
+                "encoding": {
+                    "y": {"field": "label", "type": "ordinal", "sort": y_sort},
+                    "x": {"field": "act_s_clip", "type": "temporal", "axis": {"title": None}},
+                    "x2": {"field": "act_f_clip"}
+                }
+            },
+            {
+                "data": {"values": [{"today": today_iso}]},
+                "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
+                "encoding": {"x": {"field": "today", "type": "temporal", "axis": {"title": None}}}
             }
-        ]),
-        # 2) Baseline thin bar
-        {
-            "data": {"name": "acts"},
-            "mark": {"type": "bar", "height": 6, "color": "#9ca3af", "opacity": 0.25},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
-                "x": {"field": "Baseline Start", "type": "temporal", "axis": {"title": None}},
-                "x2": {"field": "Baseline Finish"}
-            }
-        },
-        # 3) Planned main bar
-        {
-            "data": {"name": "acts"},
-            "mark": {"type": "bar", "height": 16},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": y_sort, "title": None},
-                "x": {"field": "plan_s_clip", "type": "temporal", "axis": {"title": None}},
-                "x2": {"field": "plan_f_clip"},
-                "color": {"field": "bucket", "type": "nominal", "title": "Status",
-                          "scale": {"domain": ["Done","In Progress","Late","Critical"],
-                                    "range":  ["#10b981","#3b82f6","#ef4444","#d97706"]}},
-                "tooltip": [
-                    {"field":"Project Name"},
-                    {"field":"name","title":"Activity"},
-                    {"field":"wbs_path","title":"WBS"},
-                    {"field":"owner","title":"Owner"},
-                    {"field":"pct_complete","title":"% Complete","type":"quantitative"},
-                    {"field":"Planned Start","type":"temporal"},
-                    {"field":"Planned Finish","type":"temporal"},
-                    {"field":"Actual Start","type":"temporal"},
-                    {"field":"Actual Finish","type":"temporal"},
-                    {"field":"Baseline Start","type":"temporal"},
-                    {"field":"Baseline Finish","type":"temporal"},
-                    {"field":"Delay (days)","type":"quantitative"},
-                    {"field":"critical","title":"Critical"}
-                ]
-            }
-        },
-        # 4) Progress stripe
-        {
-            "data": {"name": "acts"},
-            "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": y_sort},
-                "x": {"field": "planned_start", "type": "temporal", "axis": {"title": None}},
-                "x2": {"field": "prog_end_clip"}
-            }
-        },
-        # 5) Actual thin overlay
-        {
-            "data": {"name": "acts"},
-            "transform": [{"filter": "datum['Actual Start'] != null"}],
-            "mark": {"type": "bar", "height": 8, "color": "#111827"},
-            "encoding": {
-                "y": {"field": "label", "type": "ordinal", "sort": y_sort},
-                "x": {"field": "act_s_clip", "type": "temporal", "axis": {"title": None}},
-                "x2": {"field": "act_f_clip"}
-            }
-        },
-        # 6) Today line
-        {
-            "data": {"values": [{"today": date.today().isoformat()}]},
-            "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
-            "encoding": {"x": {"field": "today", "type": "temporal", "axis": {"title": None}}}
-        }
-    ]
-}
+        ]
+    }
 
-# Render
-st.vega_lite_chart(spec, use_container_width=True)
+    st.vega_lite_chart(spec, use_container_width=True)
 
-# ---- Details table ----
-st.subheader("Activities (filtered)")
-cols = ["project_id","wbs_path","name","owner","pct_complete","planned_start","planned_finish",
-        "actual_start","actual_finish","baselineA_finish","baselineB_finish",
-        "finish_var_days","status","critical"]
-st.dataframe(
-    df_vis[cols].rename(columns={
-        "project_id":"Project","wbs_path":"WBS","name":"Activity","owner":"Owner",
-        "pct_complete":"% Complete","planned_start":"Plan Start","planned_finish":"Plan Finish",
-        "actual_start":"Act Start","actual_finish":"Act Finish",
-        "baselineA_finish":"BL A Finish","baselineB_finish":"BL B Finish",
-        "finish_var_days":"Finish Var (d)","status":"Status","critical":"Critical"
-    }).style.format({"% Complete":"{:.0f}","Finish Var (d)":"{:+.0f}"}),
-    use_container_width=True
-)
+st.caption("Grid drives the Gantt: expand/collapse nodes; select any rows to filter the chart. If nothing is selected, the chart shows everything in the window. Static demo; wire to your APIs later.")
