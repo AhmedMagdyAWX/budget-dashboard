@@ -201,4 +201,76 @@ spec = {
                 },
                 "tooltip": [
                     {"field":"Project Name", "type":"nominal"},
-                    {"field":
+                    {"field":"name", "title":"Activity"},
+                    {"field":"wbs_path", "title":"WBS"},
+                    {"field":"owner", "title":"Owner"},
+                    {"field":"pct_complete", "title":"% Complete", "type":"quantitative"},
+                    {"field":"Planned Start", "type":"temporal"},
+                    {"field":"Planned Finish", "type":"temporal"},
+                    {"field":"Actual Start", "type":"temporal"},
+                    {"field":"Actual Finish", "type":"temporal"},
+                    {"field":"Baseline Start", "type":"temporal"},
+                    {"field":"Baseline Finish", "type":"temporal"},
+                    {"field":"Delay (days)", "type":"quantitative"},
+                    {"field":"critical", "title":"Critical", "type":"nominal"}
+                ]
+            }
+        },
+        # Progress stripe
+        {
+            "mark": {"type": "bar", "height": 6, "color": "#0ea5e9", "opacity": 0.7},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": df_vis["label"].tolist()},
+                "x": {"field": "planned_start", "type": "temporal"},
+                "x2": {"field": "prog_end_clip"}
+            }
+        },
+        # Actual (thin dark)
+        {
+            "transform": [{"filter": "datum['Actual Start'] != null"}],
+            "mark": {"type": "bar", "height": 8, "color": "#111827"},
+            "encoding": {
+                "y": {"field": "label", "type": "ordinal", "sort": df_vis["label"].tolist()},
+                "x": {"field": "act_s_clip", "type": "temporal"},
+                "x2": {"field": "act_f_clip"}
+            }
+        },
+        # Today line
+        {
+            "data": {"values": [{"today": today}]},
+            "mark": {"type": "rule", "stroke": "#ef4444", "strokeDash": [6,4], "strokeWidth": 2},
+            "encoding": {"x": {"field": "today", "type": "temporal"}}
+        }
+    ],
+    "resolve": {"scale": {"y": "independent"}},
+}
+
+st.vega_lite_chart(spec, use_container_width=True)
+
+# ===================== LEGEND / CONTROLS INFO =====================
+left, right = st.columns([2,1])
+with left:
+    st.caption("Legend — Planned: colored bar • Actual: dark thin overlay • Baseline: light thin bar • Progress: cyan stripe inside planned • Today: red dashed line.")
+with right:
+    st.metric("Activities shown", len(df_vis))
+
+# ===================== DETAILS TABLE =====================
+st.subheader("Activities (filtered)")
+show_cols = [
+    "project_id","wbs_path","name","owner","pct_complete",
+    "planned_start","planned_finish","actual_start","actual_finish",
+    "baselineA_finish","baselineB_finish","finish_var_days","status","critical"
+]
+tbl = df_vis[show_cols].rename(columns={
+    "project_id":"Project","wbs_path":"WBS","name":"Activity","owner":"Owner","pct_complete":"% Complete",
+    "planned_start":"Plan Start","planned_finish":"Plan Finish",
+    "actual_start":"Act Start","actual_finish":"Act Finish",
+    "baselineA_finish":"BL A Finish","baselineB_finish":"BL B Finish",
+    "finish_var_days":"Finish Var (d)","status":"Status","critical":"Critical"
+})
+st.dataframe(
+    tbl.style.format({"% Complete":"{:.0f}","Finish Var (d)":"{:+.0f}"}),
+    use_container_width=True
+)
+
+st.caption("Static demo. Replace DATA with your API payloads (Activities, Baselines, Actuals). Keep column names where possible to reuse this page unchanged.")
