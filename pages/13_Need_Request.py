@@ -193,7 +193,7 @@ with tabs[0]:
 
     if go:
         NR["step"] = 2
-        st.experimental_rerun()
+        st.rerun()
 
 # ------------------------ Items Step ------------------------
 with tabs[1]:
@@ -209,18 +209,18 @@ with tabs[1]:
             "boq_id": None, "boq_item_id": None, "boq_detail_id": None,
             "notes": "",
         })
-        st.experimental_rerun()
+        st.rerun()
     if tb2.button("📄 Duplicate row", use_container_width=True, disabled=len(NR["items"])==0):
         i = NR["active_row"]
         ensure_row_index(i)
         NR["items"].insert(i+1, NR["items"][i].copy())
-        st.experimental_rerun()
+        st.rerun()
     if tb3.button("🗑️ Delete row", use_container_width=True, disabled=len(NR["items"])==0):
         i = NR["active_row"]
         ensure_row_index(i)
         NR["items"].pop(i)
         NR["active_row"] = max(0, i-1)
-        st.experimental_rerun()
+        st.rerun()
     with tb4:
         NR["active_row"] = st.number_input("Active row #", min_value=0, step=1,
                                            value=min(NR["active_row"], max(0, len(NR["items"])-1)),
@@ -288,7 +288,7 @@ with tabs[1]:
                 if clicked:
                     NR["active_row"] = i
                     NR["boq_picker_open"] = True
-                    st.experimental_rerun()
+                    st.rerun()
 
     st.divider()
 
@@ -307,7 +307,7 @@ with tabs[1]:
                 c = st.columns([1,1,3])[0]
                 if c.button("Close"):
                     NR["boq_picker_open"] = False
-                    st.experimental_rerun()
+                    st.rerun()
             else:
                 colA, colB = st.columns([0.5, 0.5])
                 with colA:
@@ -347,16 +347,16 @@ with tabs[1]:
                     active["boq_item_id"] = item_choice
                     active["boq_detail_id"] = det_choice
                     NR["boq_picker_open"] = False
-                    st.experimental_rerun()
+                    st.rerun()
                 if c2.button("Clear"):
                     active["boq_id"] = None
                     active["boq_item_id"] = None
                     active["boq_detail_id"] = None
                     NR["boq_picker_open"] = False
-                    st.experimental_rerun()
+                    st.rerun()
                 if c3.button("Close", use_container_width=False):
                     NR["boq_picker_open"] = False
-                    st.experimental_rerun()
+                    st.rerun()
 
     # ------------------------ Submit & Preview ------------------------
     st.subheader("Submit")
