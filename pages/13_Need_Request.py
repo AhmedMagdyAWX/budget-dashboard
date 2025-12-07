@@ -1,6 +1,6 @@
 # pages/13_Need_Request.py
-# Need Request wizard (Header -> Items) with BOQ picker drawer (boq -> item -> detail)
-# Static demo data; wire to your APIs later.
+# Need Request wizard (Header -> Items) with BOQ dropdown,
+# BOQ Item picker, and BOQ Item Detail picker (separate drawers)
 
 import streamlit as st
 import pandas as pd
@@ -13,7 +13,6 @@ def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
     else:
-        # older Streamlit
         st.experimental_rerun()  # type: ignore[attr-defined]
 
 # ------------------------ Demo master data ------------------------
@@ -29,7 +28,7 @@ RESOURCES = [
     {"id": "R-SAND",     "name": "Sand Medium"},
     {"id": "R-PLY-18",   "name": "Plywood 18mm"},
 ]
-# WBS per project (flat list for simplicity)
+
 WBS = {
     "PRJ-001": [
         {"id":"1", "code":"1", "name":"Phase 1"},
@@ -44,6 +43,7 @@ WBS = {
         {"id":"1.1","code":"1.1","name":"Mobilization"},
     ],
 }
+
 # BOQ structure per project: BOQ -> Items -> Details
 BOQS = {
     "PRJ-001": [
@@ -51,57 +51,41 @@ BOQS = {
             "boq_id": "B-001",
             "boq_name": "Concrete Works",
             "items": [
-                {
-                    "item_id": "B-001-10",
-                    "item_code": "CW-010",
-                    "item_desc": "Footings concrete C30 (incl. pumping)",
-                    "details": [
-                        {"detail_id":"B-001-10-a","detail_desc":"Concrete 30 MPa"},
-                        {"detail_id":"B-001-10-b","detail_desc":"Formwork & ties"},
-                        {"detail_id":"B-001-10-c","detail_desc":"Rebar Ø10, Ø16"},
-                    ],
-                },
-                {
-                    "item_id": "B-001-20",
-                    "item_code": "CW-020",
-                    "item_desc": "Slab on grade C25",
-                    "details": [
-                        {"detail_id":"B-001-20-a","detail_desc":"Concrete 25 MPa"},
-                        {"detail_id":"B-001-20-b","detail_desc":"Compaction & gravel"},
-                    ],
-                },
+                {"item_id": "B-001-10","item_code": "CW-010","item_desc": "Footings concrete C30 (incl. pumping)",
+                 "details": [
+                     {"detail_id":"B-001-10-a","detail_desc":"Concrete 30 MPa"},
+                     {"detail_id":"B-001-10-b","detail_desc":"Formwork & ties"},
+                     {"detail_id":"B-001-10-c","detail_desc":"Rebar Ø10, Ø16"},
+                 ]},
+                {"item_id": "B-001-20","item_code": "CW-020","item_desc": "Slab on grade C25",
+                 "details": [
+                     {"detail_id":"B-001-20-a","detail_desc":"Concrete 25 MPa"},
+                     {"detail_id":"B-001-20-b","detail_desc":"Compaction & gravel"},
+                 ]},
             ],
         },
         {
             "boq_id": "B-002",
             "boq_name": "Finishes",
             "items": [
-                {
-                    "item_id": "B-002-10",
-                    "item_code": "FN-010",
-                    "item_desc": "Ceramic tiling 60×60",
-                    "details": [
-                        {"detail_id":"B-002-10-a","detail_desc":"Tiles supply"},
-                        {"detail_id":"B-002-10-b","detail_desc":"Adhesive & spacers"},
-                    ],
-                }
+                {"item_id":"B-002-10","item_code":"FN-010","item_desc":"Ceramic tiling 60×60",
+                 "details": [
+                     {"detail_id":"B-002-10-a","detail_desc":"Tiles supply"},
+                     {"detail_id":"B-002-10-b","detail_desc":"Adhesive & spacers"},
+                 ]},
             ],
-        }
+        },
     ],
     "PRJ-002": [
         {
             "boq_id": "B-101",
             "boq_name": "Site Setup",
             "items": [
-                {
-                    "item_id": "B-101-10",
-                    "item_code": "SS-010",
-                    "item_desc": "Temporary fencing",
-                    "details": [
-                        {"detail_id":"B-101-10-a","detail_desc":"Fencing panels"},
-                        {"detail_id":"B-101-10-b","detail_desc":"Concrete blocks"},
-                    ],
-                }
+                {"item_id":"B-101-10","item_code":"SS-010","item_desc":"Temporary fencing",
+                 "details": [
+                     {"detail_id":"B-101-10-a","detail_desc":"Fencing panels"},
+                     {"detail_id":"B-101-10-b","detail_desc":"Concrete blocks"},
+                 ]},
             ],
         }
     ],
@@ -134,8 +118,9 @@ if "nr" not in st.session_state:
                 "notes": "",
             }
         ],
-        "active_row": 0,           # which row to edit for BOQ picker
-        "boq_picker_open": False,  # show drawer
+        "active_row": 0,
+        "item_picker_open": False,    # new: item picker drawer
+        "detail_picker_open": False,  # new: detail picker drawer
     }
 
 NR = st.session_state.nr
@@ -146,7 +131,6 @@ def wbs_options(project_id):
     return {row["id"]: f'{row["code"]} — {row["name"]}' for row in rows}
 
 def boq_flat(project_id):
-    """Return DataFrames: (boqs_df, items_df, details_df) for the project."""
     pack = BOQS.get(project_id, [])
     boqs, items, details = [], [], []
     for b in pack:
@@ -172,7 +156,6 @@ def ensure_row_index(idx):
 
 # ------------------------ Header Step ------------------------
 st.title("🧾 Need Request")
-
 tabs = st.tabs(["1) Header", "2) Items"])
 
 with tabs[0]:
@@ -195,18 +178,16 @@ with tabs[0]:
     st.divider()
     c1, c2 = st.columns([1,5])
     with c1:
-        go = st.button("➡️ Next (Items)", type="primary", use_container_width=True)
+        if st.button("➡️ Next (Items)", type="primary", use_container_width=True):
+            NR["step"] = 2
+            _rerun()
     with c2:
-        st.caption("Tip: Project you choose here will be the **default** project for new item rows.")
-
-    if go:
-        NR["step"] = 2
-        _rerun()
+        st.caption("Project here becomes the default for new item rows.")
 
 # ------------------------ Items Step ------------------------
 with tabs[1]:
     st.markdown("#### Items")
-    st.caption("Each row is a requested resource. Use **Pick BOQ…** to choose BOQ → Item → Detail via a drawer (easier than long dropdowns).")
+    st.caption("BOQ is a dropdown. Use the **Pick Item…** and **Pick Detail…** drawers for long lists.")
 
     # Toolbar
     tb1, tb2, tb3, tb4, tb5 = st.columns([1.1,1.1,1.1,1.4,4])
@@ -229,21 +210,25 @@ with tabs[1]:
     with tb4:
         NR["active_row"] = st.number_input("Active row #", min_value=0, step=1,
                                            value=min(NR["active_row"], max(0, len(NR["items"])-1)),
-                                           help="Row used when you click ‘Pick BOQ…’")
+                                           help="Row used when you click ‘Pick Item…’ or ‘Pick Detail…’")
 
-    # Items editor (manual layout)
+    # Header row for the editor
     if not NR["items"]:
         st.info("No items yet. Click **Add row**.")
     else:
-        header_cols = st.columns([0.6, 0.5, 0.35, 0.9, 0.9, 0.7, 0.9, 0.7, 0.6, 0.3])
-        for c, txt in zip(header_cols, ["Resource", "Project", "WBS", "BOQ", "BOQ Item", "Detail", "Qty", "Unit", "Notes", "BOQ Picker"]):
+        header_cols = st.columns([0.6, 0.5, 0.45, 0.9, 0.9, 0.9, 0.7, 0.9, 0.7, 0.6])
+        for c, txt in zip(
+            header_cols,
+            ["Resource", "Project", "WBS", "BOQ", "BOQ Item", "BOQ Item Detail", "Qty", "Unit", "Notes", "Actions"],
+        ):
             c.markdown(f"**{txt}**")
 
+        # Per-row editor
         for i, row in enumerate(NR["items"]):
-            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([0.6, 0.5, 0.35, 0.9, 0.9, 0.7, 0.9, 0.7, 0.6, 0.3])
+            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([0.6, 0.5, 0.45, 0.9, 0.9, 0.9, 0.7, 0.9, 0.7, 0.6])
 
+            # Resource
             with c1:
-                # Safe options & index for resource dropdown
                 res_options = [None] + [r["id"] for r in RESOURCES]
                 res_index = res_options.index(row.get("resource_id")) if row.get("resource_id") in res_options else 0
                 row["resource_id"] = st.selectbox(
@@ -253,13 +238,24 @@ with tabs[1]:
                     format_func=lambda rid: "— Select —" if rid is None else RESOURCE_MAP[rid],
                     label_visibility="collapsed",
                 )
+
+            # Project
             with c2:
+                prev_proj = row["project_id"]
                 row["project_id"] = st.selectbox(
                     f"Proj_{i}", [p["id"] for p in PROJECTS],
                     index=[p["id"] for p in PROJECTS].index(row["project_id"]) if row["project_id"] else 0,
                     format_func=lambda pid: PROJECT_MAP.get(pid, pid),
                     label_visibility="collapsed",
                 )
+                # If project changed, clear WBS/BOQ/Item/Detail
+                if row["project_id"] != prev_proj:
+                    row["wbs_id"] = None
+                    row["boq_id"] = None
+                    row["boq_item_id"] = None
+                    row["boq_detail_id"] = None
+
+            # WBS
             with c3:
                 wopt = wbs_options(row["project_id"])
                 keys = [None] + list(wopt.keys())
@@ -269,77 +265,100 @@ with tabs[1]:
                     format_func=lambda wid: "— (optional) —" if wid is None else wopt.get(wid, wid),
                     label_visibility="collapsed",
                 )
+
+            # BOQ (dropdown)
             with c4:
-                st.text_input(f"BOQ_{i}",
-                              value=row["boq_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                boqs_df, items_df, details_df = boq_flat(row["project_id"])
+                boq_ids = [None] + boqs_df["boq_id"].tolist() if not boqs_df.empty else [None]
+                # display label
+                def _boq_lbl(bid):
+                    if bid is None: return "— Select —"
+                    try:
+                        return f'{bid} — {boqs_df.set_index("boq_id").loc[bid,"boq_name"]}'
+                    except Exception:
+                        return bid
+                curr_boq = row.get("boq_id")
+                idx_boq = boq_ids.index(curr_boq) if curr_boq in boq_ids else 0
+                new_boq = st.selectbox(
+                    f"BOQ_{i}", boq_ids, index=idx_boq,
+                    format_func=_boq_lbl, label_visibility="collapsed"
+                )
+                if new_boq != curr_boq:
+                    row["boq_id"] = new_boq
+                    # Clear downstream selections if BOQ changed
+                    row["boq_item_id"] = None
+                    row["boq_detail_id"] = None
+
+            # BOQ Item (display + picker)
             with c5:
-                st.text_input(f"BOQItem_{i}",
-                              value=row["boq_item_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                st.text_input(
+                    f"BOQItem_{i}",
+                    value=row["boq_item_id"] or "",
+                    placeholder="(none)",
+                    label_visibility="collapsed",
+                    disabled=True
+                )
+                pick_item = st.button("Pick Item…", key=f"pick_item_{i}", use_container_width=True)
+                if pick_item:
+                    NR["active_row"] = i
+                    NR["item_picker_open"] = True
+                    NR["detail_picker_open"] = False
+                    _rerun()
+
+            # BOQ Item Detail (display + picker)
             with c6:
-                st.text_input(f"BOQDet_{i}",
-                              value=row["boq_detail_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                st.text_input(
+                    f"BOQDet_{i}",
+                    value=row["boq_detail_id"] or "",
+                    placeholder="(none)",
+                    label_visibility="collapsed",
+                    disabled=True
+                )
+                pick_det = st.button("Pick Detail…", key=f"pick_det_{i}", use_container_width=True)
+                if pick_det:
+                    NR["active_row"] = i
+                    NR["detail_picker_open"] = True
+                    NR["item_picker_open"] = False
+                    _rerun()
+
+            # Qty, Unit, Notes
             with c7:
                 row["qty"] = st.number_input(f"Qty_{i}", min_value=0.0, value=float(row["qty"]), step=1.0, label_visibility="collapsed")
             with c8:
                 row["unit"] = st.text_input(f"Unit_{i}", value=row["unit"], label_visibility="collapsed")
             with c9:
                 row["notes"] = st.text_input(f"Notes_{i}", value=row["notes"], label_visibility="collapsed")
+
+            # Actions
             with c10:
-                clicked = st.button("Pick…", key=f"pick_{i}", use_container_width=True)
-                if clicked:
+                if st.button("Set Active", key=f"active_{i}", use_container_width=True):
                     NR["active_row"] = i
-                    NR["boq_picker_open"] = True
                     _rerun()
 
     st.divider()
 
-    # ------------------------ BOQ Picker (compat: no st.dialog) ------------------------
-    if NR["boq_picker_open"] and len(NR["items"]) > 0:
+    # ------------------------ BOQ ITEM Picker (drawer) ------------------------
+    if NR["item_picker_open"] and len(NR["items"]) > 0:
         i = NR["active_row"]; ensure_row_index(i)
         active = NR["items"][i]
         project_id = active["project_id"] or NR["header"]["project_id"]
-
         boqs_df, items_df, details_df = boq_flat(project_id)
 
-        with st.expander(f"📦 BOQ Picker — Project: {PROJECT_MAP.get(project_id, project_id)}", expanded=True):
-            if boqs_df.empty:
-                st.warning("No BOQs for this project.")
+        with st.expander(f"📦 Pick BOQ Item — Project: {PROJECT_MAP.get(project_id, project_id)}", expanded=True):
+            if active.get("boq_id") is None:
+                st.warning("Select a BOQ first.")
                 if st.button("Close"):
-                    NR["boq_picker_open"] = False
+                    NR["item_picker_open"] = False
                     _rerun()
             else:
-                colA, colB = st.columns([0.5, 0.5])
-                with colA:
-                    st.markdown("**BOQs**")
-                    ids = boqs_df["boq_id"].tolist()
-                    idx = 0 if active.get("boq_id") not in ids else ids.index(active["boq_id"])
-                    b_choice = st.radio(
-                        "BOQ",
-                        ids,
-                        index=idx,
-                        format_func=lambda bid: f'{bid} — {boqs_df.set_index("boq_id").loc[bid,"boq_name"]}',
-                        label_visibility="collapsed",
-                    )
-                    subset_items = items_df[items_df["boq_id"] == b_choice].copy()
+                subset_items = items_df[items_df["boq_id"] == active["boq_id"]].copy()
+                st.markdown("**Search items**")
+                q = st.text_input("Filter by code/description", "", label_visibility="collapsed", placeholder="Type to filter…")
+                if q:
+                    mask = subset_items["item_code"].str.contains(q, case=False) | subset_items["item_desc"].str.contains(q, case=False)
+                    subset_items = subset_items[mask]
 
-                with colB:
-                    st.markdown("**Search items**")
-                    q = st.text_input("Filter", "", label_visibility="collapsed", placeholder="Type to filter…")
-                    if q:
-                        mask = subset_items["item_code"].str.contains(q, case=False) | subset_items["item_desc"].str.contains(q, case=False)
-                        subset_items = subset_items[mask]
-
-                st.markdown("**BOQ Items**")
-                st.dataframe(subset_items[["item_id", "item_code", "item_desc"]], use_container_width=True, height=180)
+                st.dataframe(subset_items[["item_id", "item_code", "item_desc"]], use_container_width=True, height=200)
                 item_ids = subset_items["item_id"].tolist()
                 if not item_ids:
                     st.info("No items under this BOQ (after filtering).")
@@ -348,45 +367,65 @@ with tabs[1]:
                     idx2 = 0 if active.get("boq_item_id") not in item_ids else item_ids.index(active["boq_item_id"])
                     item_choice = st.selectbox("Choose BOQ Item", item_ids, index=idx2)
 
-                # Details
-                if item_choice:
-                    sub_det = details_df[details_df["item_id"] == item_choice].copy()
-                else:
-                    sub_det = pd.DataFrame(columns=["detail_id","detail_desc"])
+                c1, c2, c3 = st.columns([1,1,4])
+                if c1.button("Use selection", type="primary", disabled=item_choice is None):
+                    active["boq_item_id"] = item_choice
+                    # Clear detail after changing item
+                    active["boq_detail_id"] = None
+                    NR["item_picker_open"] = False
+                    _rerun()
+                if c2.button("Clear"):
+                    active["boq_item_id"] = None
+                    active["boq_detail_id"] = None
+                    NR["item_picker_open"] = False
+                    _rerun()
+                if c3.button("Close"):
+                    NR["item_picker_open"] = False
+                    _rerun()
 
-                st.markdown("**Item Details**")
+    # ------------------------ BOQ ITEM DETAIL Picker (drawer) ------------------------
+    if NR["detail_picker_open"] and len(NR["items"]) > 0:
+        i = NR["active_row"]; ensure_row_index(i)
+        active = NR["items"][i]
+        project_id = active["project_id"] or NR["header"]["project_id"]
+        boqs_df, items_df, details_df = boq_flat(project_id)
+
+        with st.expander(f"🔎 Pick BOQ Item Detail — Project: {PROJECT_MAP.get(project_id, project_id)}", expanded=True):
+            if not active.get("boq_item_id"):
+                st.warning("Select a BOQ Item first.")
+                if st.button("Close"):
+                    NR["detail_picker_open"] = False
+                    _rerun()
+            else:
+                sub_det = details_df[details_df["item_id"] == active["boq_item_id"]].copy()
                 if sub_det.empty:
-                    st.caption("No details for this item.")
+                    st.info("This item has no details.")
                     det_choice = None
                 else:
-                    st.dataframe(sub_det[["detail_id", "detail_desc"]], use_container_width=True, height=140)
+                    st.dataframe(sub_det[["detail_id", "detail_desc"]], use_container_width=True, height=180)
                     det_ids = sub_det["detail_id"].tolist()
                     det_choice = st.selectbox(
                         "Choose Detail (optional)",
                         [None] + det_ids,
-                        index=0 if not active.get("boq_detail_id") or active["boq_detail_id"] not in det_ids else det_ids.index(active["boq_detail_id"]) + 1
+                        index=0 if not active.get("boq_detail_id") or active["boq_detail_id"] not in det_ids
+                              else det_ids.index(active["boq_detail_id"]) + 1
                     )
 
                 c1, c2, c3 = st.columns([1,1,4])
-                if c1.button("Use selection", type="primary", disabled=item_choice is None):
-                    active["boq_id"] = b_choice
-                    active["boq_item_id"] = item_choice
+                if c1.button("Use selection", type="primary"):
                     active["boq_detail_id"] = det_choice
-                    NR["boq_picker_open"] = False
+                    NR["detail_picker_open"] = False
                     _rerun()
                 if c2.button("Clear"):
-                    active["boq_id"] = None
-                    active["boq_item_id"] = None
                     active["boq_detail_id"] = None
-                    NR["boq_picker_open"] = False
+                    NR["detail_picker_open"] = False
                     _rerun()
                 if c3.button("Close"):
-                    NR["boq_picker_open"] = False
+                    NR["detail_picker_open"] = False
                     _rerun()
 
     # ------------------------ Submit & Preview ------------------------
     st.subheader("Submit")
-    # Validate
     errors = []
     for idx, row in enumerate(NR["items"]):
         if not row["resource_id"]:
@@ -431,5 +470,4 @@ with tabs[1]:
     with col_preview:
         st.json(payload, expanded=False)
 
-# ------------------------ End ------------------------
-st.caption("Demo data only. Replace lookups with your APIs. The BOQ drawer filters by the selected Project for each row.")
+st.caption("BOQ is inline dropdown. BOQ Item and Detail are separate pickers. All lists filter by the row’s Project.")
