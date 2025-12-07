@@ -235,12 +235,17 @@ with tabs[1]:
         for i, row in enumerate(NR["items"]):
             c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([0.6, 0.5, 0.35, 0.9, 0.9, 0.7, 0.9, 0.7, 0.6, 0.3])
             with c1:
+                # build options list first, then find a safe index
+                res_options = [None] + [r["id"] for r in RESOURCES]
+                res_index = res_options.index(row.get("resource_id")) if row.get("resource_id") in res_options else 0
                 row["resource_id"] = st.selectbox(
-                    f"Resource_{i}", [None] + [r["id"] for r in RESOURCES],
-                    index=(0 if not row["resource_id"] else [None]+[r["id"] for r in RESOURCES]).index(row["resource_id"]),
+                    f"Resource_{i}",
+                    res_options,
+                    index=res_index,
                     format_func=lambda rid: "— Select —" if rid is None else RESOURCE_MAP[rid],
                     label_visibility="collapsed",
                 )
+
             with c2:
                 row["project_id"] = st.selectbox(
                     f"Proj_{i}", [p["id"] for p in PROJECTS],
