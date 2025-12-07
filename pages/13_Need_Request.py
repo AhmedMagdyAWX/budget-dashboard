@@ -1,12 +1,19 @@
 # pages/13_Need_Request.py
 # Need Request wizard (Header -> Items) with BOQ picker dialog (boq -> item -> detail)
-# Static demo data; wire to your APIs later.
 
 import streamlit as st
 import pandas as pd
 from datetime import date
 
 st.set_page_config(page_title="Need Request", layout="wide")
+
+# -------- version-safe rerun --------
+def _rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        # older Streamlit
+        st.experimental_rerun()  # type: ignore[attr-defined]
 
 # ------------------------ Demo master data ------------------------
 USERS = ["Ahmed", "Lina", "Omar", "Sara", "Amr"]
@@ -21,7 +28,6 @@ RESOURCES = [
     {"id": "R-SAND",     "name": "Sand Medium"},
     {"id": "R-PLY-18",   "name": "Plywood 18mm"},
 ]
-# WBS per project (flat list for simplicity)
 WBS = {
     "PRJ-001": [
         {"id":"1", "code":"1", "name":"Phase 1"},
@@ -36,7 +42,6 @@ WBS = {
         {"id":"1.1","code":"1.1","name":"Mobilization"},
     ],
 }
-# BOQ structure per project: BOQ -> Items -> Details
 BOQS = {
     "PRJ-001": [
         {
@@ -126,8 +131,8 @@ if "nr" not in st.session_state:
                 "notes": "",
             }
         ],
-        "active_row": 0,           # which row to edit for BOQ picker
-        "boq_picker_open": False,  # show dialog
+        "active_row": 0,
+        "boq_picker_open": False,
     }
 
 NR = st.session_state.nr
@@ -138,10 +143,8 @@ def wbs_options(project_id):
     return {row["id"]: f'{row["code"]} — {row["name"]}' for row in rows}
 
 def boq_flat(project_id):
-    """Return DataFrames: (boqs_df, items_df, details_df) for the project."""
-    pack = BOQS.get(project_id, [])
     boqs, items, details = [], [], []
-    for b in pack:
+    for b in BOQS.get(project_id, []):
         boqs.append({"boq_id": b["boq_id"], "boq_name": b["boq_name"]})
         for it in b["items"]:
             items.append({
@@ -164,7 +167,6 @@ def ensure_row_index(idx):
 
 # ------------------------ Header Step ------------------------
 st.title("🧾 Need Request")
-
 tabs = st.tabs(["1) Header", "2) Items"])
 
 with tabs[0]:
@@ -176,6 +178,7 @@ with tabs[0]:
         h["requester"] = st.selectbox("Requester", USERS, index=USERS.index(h["requester"]) if h["requester"] in USERS else 0)
     with col3:
         h["date"] = st.date_input("Request date", h["date"])
+
     colp, coln = st.columns([1.4,1])
     with colp:
         h["project_id"] = st.selectbox("Project", [p["id"] for p in PROJECTS],
@@ -187,18 +190,16 @@ with tabs[0]:
     st.divider()
     c1, c2 = st.columns([1,5])
     with c1:
-        go = st.button("➡️ Next (Items)", type="primary", use_container_width=True)
+        if st.button("➡️ Next (Items)", type="primary", use_container_width=True):
+            NR["step"] = 2
+            _rerun()
     with c2:
-        st.caption("Tip: Project you choose here will be the **default** project for new item rows.")
-
-    if go:
-        NR["step"] = 2
-        st.rerun()
+        st.caption("Tip: Project here becomes the default project for new item rows.")
 
 # ------------------------ Items Step ------------------------
 with tabs[1]:
     st.markdown("#### Items")
-    st.caption("Each row is a requested resource. Use **Pick BOQ…** to choose BOQ → Item → Detail via a popup (easier than long dropdowns).")
+    st.caption("Each row is a requested resource. Use **Pick BOQ…** to choose BOQ → Item → Detail via a popup.")
 
     # Toolbar
     tb1, tb2, tb3, tb4, tb5 = st.columns([1.1,1.1,1.1,1.4,4])
@@ -209,24 +210,21 @@ with tabs[1]:
             "boq_id": None, "boq_item_id": None, "boq_detail_id": None,
             "notes": "",
         })
-        st.rerun()
+        _rerun()
     if tb2.button("📄 Duplicate row", use_container_width=True, disabled=len(NR["items"])==0):
-        i = NR["active_row"]
-        ensure_row_index(i)
+        i = NR["active_row"]; ensure_row_index(i)
         NR["items"].insert(i+1, NR["items"][i].copy())
-        st.rerun()
+        _rerun()
     if tb3.button("🗑️ Delete row", use_container_width=True, disabled=len(NR["items"])==0):
-        i = NR["active_row"]
-        ensure_row_index(i)
-        NR["items"].pop(i)
-        NR["active_row"] = max(0, i-1)
-        st.rerun()
+        i = NR["active_row"]; ensure_row_index(i)
+        NR["items"].pop(i); NR["active_row"] = max(0, i-1)
+        _rerun()
     with tb4:
         NR["active_row"] = st.number_input("Active row #", min_value=0, step=1,
                                            value=min(NR["active_row"], max(0, len(NR["items"])-1)),
                                            help="Row used when you click ‘Pick BOQ…’")
 
-    # Items editor (manual layout to allow per-row buttons + popup)
+    # Grid-like editor
     if not NR["items"]:
         st.info("No items yet. Click **Add row**.")
     else:
@@ -260,23 +258,11 @@ with tabs[1]:
                     label_visibility="collapsed",
                 )
             with c4:
-                st.text_input(f"BOQ_{i}",
-                              value=row["boq_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                st.text_input(f"BOQ_{i}", value=row["boq_id"] or "", placeholder="(none)", label_visibility="collapsed", disabled=True)
             with c5:
-                st.text_input(f"BOQItem_{i}",
-                              value=row["boq_item_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                st.text_input(f"BOQItem_{i}", value=row["boq_item_id"] or "", placeholder="(none)", label_visibility="collapsed", disabled=True)
             with c6:
-                st.text_input(f"BOQDet_{i}",
-                              value=row["boq_detail_id"] or "",
-                              placeholder="(none)",
-                              label_visibility="collapsed",
-                              disabled=True)
+                st.text_input(f"BOQDet_{i}", value=row["boq_detail_id"] or "", placeholder="(none)", label_visibility="collapsed", disabled=True)
             with c7:
                 row["qty"] = st.number_input(f"Qty_{i}", min_value=0.0, value=float(row["qty"]), step=1.0, label_visibility="collapsed")
             with c8:
@@ -284,18 +270,16 @@ with tabs[1]:
             with c9:
                 row["notes"] = st.text_input(f"Notes_{i}", value=row["notes"], label_visibility="collapsed")
             with c10:
-                clicked = st.button("Pick…", key=f"pick_{i}", use_container_width=True)
-                if clicked:
+                if st.button("Pick…", key=f"pick_{i}", use_container_width=True):
                     NR["active_row"] = i
                     NR["boq_picker_open"] = True
-                    st.rerun()
+                    _rerun()
 
     st.divider()
 
     # ------------------------ BOQ Picker Popup ------------------------
     if NR["boq_picker_open"] and len(NR["items"]) > 0:
-        i = NR["active_row"]
-        ensure_row_index(i)
+        i = NR["active_row"]; ensure_row_index(i)
         active = NR["items"][i]
         project_id = active["project_id"] or NR["header"]["project_id"]
         boqs_df, items_df, details_df = boq_flat(project_id)
@@ -304,18 +288,16 @@ with tabs[1]:
             st.caption(f"Project: **{PROJECT_MAP.get(project_id, project_id)}**")
             if boqs_df.empty:
                 st.warning("No BOQs for this project.")
-                c = st.columns([1,1,3])[0]
-                if c.button("Close"):
+                if st.button("Close"):
                     NR["boq_picker_open"] = False
-                    st.rerun()
+                    _rerun()
             else:
                 colA, colB = st.columns([0.5, 0.5])
                 with colA:
                     st.markdown("**BOQs**")
-                    b_choice = st.radio(
-                        "BOQ",
-                        boqs_df["boq_id"].tolist(),
-                        index=0 if active.get("boq_id") not in boqs_df["boq_id"].tolist() else boqs_df["boq_id"].tolist().index(active["boq_id"]),
+                    ids = boqs_df["boq_id"].tolist()
+                    idx = 0 if active.get("boq_id") not in ids else ids.index(active["boq_id"])
+                    b_choice = st.radio("BOQ", ids, index=idx,
                         format_func=lambda bid: f'{bid} — {boqs_df.set_index("boq_id").loc[bid,"boq_name"]}',
                         label_visibility="collapsed",
                     )
@@ -323,8 +305,7 @@ with tabs[1]:
 
                 with colB:
                     st.markdown("**Search items**")
-                    q = st.text_input("Filter by code/description", "", label_visibility="collapsed",
-                                      placeholder="Type to filter…")
+                    q = st.text_input("Filter", "", label_visibility="collapsed", placeholder="Type to filter…")
                     if q:
                         mask = subset_items["item_code"].str.contains(q, case=False) | subset_items["item_desc"].str.contains(q, case=False)
                         subset_items = subset_items[mask]
@@ -332,14 +313,15 @@ with tabs[1]:
                 st.markdown("**BOQ Items**")
                 st.dataframe(subset_items[["item_id", "item_code", "item_desc"]], use_container_width=True, height=180)
                 item_ids = subset_items["item_id"].tolist()
-                item_choice = st.selectbox("Choose BOQ Item", item_ids, index=0 if active.get("boq_item_id") not in item_ids else item_ids.index(active["boq_item_id"]))
+                idx2 = 0 if active.get("boq_item_id") not in item_ids else item_ids.index(active["boq_item_id"])
+                item_choice = st.selectbox("Choose BOQ Item", item_ids, index=idx2)
 
                 st.markdown("**Item Details**")
                 sub_det = details_df[details_df["item_id"] == item_choice].copy()
                 st.dataframe(sub_det[["detail_id", "detail_desc"]], use_container_width=True, height=140)
                 det_ids = sub_det["detail_id"].tolist()
                 det_choice = st.selectbox("Choose Detail (optional)", [None] + det_ids,
-                                          index=0 if not active.get("boq_detail_id") or active["boq_detail_id"] not in det_ids else det_ids.index(active["boq_detail_id"])+1)
+                                          index=0 if active.get("boq_detail_id") not in det_ids else det_ids.index(active["boq_detail_id"])+1)
 
                 c1, c2, c3 = st.columns([1,1,4])
                 if c1.button("Use selection", type="primary"):
@@ -347,20 +329,19 @@ with tabs[1]:
                     active["boq_item_id"] = item_choice
                     active["boq_detail_id"] = det_choice
                     NR["boq_picker_open"] = False
-                    st.rerun()
+                    _rerun()
                 if c2.button("Clear"):
                     active["boq_id"] = None
                     active["boq_item_id"] = None
                     active["boq_detail_id"] = None
                     NR["boq_picker_open"] = False
-                    st.rerun()
-                if c3.button("Close", use_container_width=False):
+                    _rerun()
+                if c3.button("Close"):
                     NR["boq_picker_open"] = False
-                    st.rerun()
+                    _rerun()
 
     # ------------------------ Submit & Preview ------------------------
     st.subheader("Submit")
-    # Validate
     errors = []
     for idx, row in enumerate(NR["items"]):
         if not row["resource_id"]:
@@ -401,9 +382,8 @@ with tabs[1]:
     with col_submit:
         submit_disabled = len(errors) > 0 or len(NR["items"]) == 0
         if st.button("✅ Submit Need Request", type="primary", disabled=submit_disabled, use_container_width=True):
-            st.success("Need Request submitted (demo). Replace this with your API call.")
+            st.success("Need Request submitted (demo). Replace with your API call.")
     with col_preview:
         st.json(payload, expanded=False)
 
-# ------------------------ End ------------------------
-st.caption("Demo data only. Replace lookups with your API calls. The BOQ dialog filters by the selected Project for each row.")
+st.caption("Demo only. Replace lookups with your APIs. The BOQ dialog filters by the selected Project per row.")
